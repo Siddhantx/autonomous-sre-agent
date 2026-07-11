@@ -1,0 +1,174 @@
+# docker-compose.yml
+# Master simulation platform for APOE Enterprise Lab
+# Models a typical financial enterprise transaction processing system.
+
+services:
+  # ==========================================
+  # PERSISTENCE & DATA PIPELINES
+  # ==========================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: apoe-postgres
+    environment:
+      POSTGRES_DB: enterprise_db
+      POSTGRES_USER: apoe_user
+      POSTGRES_PASSWORD: apoe_secure_pass
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U apoe_user -d enterprise_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: apoe-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka:
+    image: confluentinc/cp-kafka:7.3.0
+    container_name: apoe-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:29093'
+      KAFKA_LISTENERS: 'PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:29093,PLAINTEXT_HOST://0.0.0.0:9092'
+      KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_LOG_DIRS: '/tmp/kraft-combined-logs'
+      CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  # ==========================================
+  # SIMULATED APPLICATION SERVICES
+  # ==========================================
+  api-gateway:
+    image: nginx:alpine
+    container_name: apoe-api-gateway
+    ports:
+      - "8080:80"
+    volumes:
+      - ./gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      order-service:
+        condition: service_healthy
+
+  order-service:
+    build:
+      context: ./order-service
+    container_name: order-service
+    ports:
+      - "8081:8081"
+    environment:
+      - PORT=8081
+      - DB_CONN=postgres://apoe_user:apoe_secure_pass@postgres:5432/enterprise_db
+      - REDIS_CONN=redis://redis:6379/0
+      - KAFKA_BROKER=kafka:29092
+      - OPENTELEMETRY_COLLECTOR_URL=http://otel-collector:4317
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  inventory-service:
+    build:
+      context: ./inventory-service
+    container_name: inventory-service
+    ports:
+      - "8082:8082"
+    environment:
+      - PORT=8082
+      - DB_CONN=postgres://apoe_user:apoe_secure_pass@postgres:5432/enterprise_db
+      - REDIS_CONN=redis://redis:6379/0
+      - KAFKA_BROKER=kafka:29092
+      - OPENTELEMETRY_COLLECTOR_URL=http://otel-collector:4317
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  payment-service:
+    build:
+      context: ./payment-service
+    container_name: payment-service
+    ports:
+      - "8083:8083"
+    environment:
+      - PORT=8083
+      - KAFKA_BROKER=kafka:29092
+      - OPENTELEMETRY_COLLECTOR_URL=http://otel-collector:4317
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  # ==========================================
+  # OBSERVABILITY BACKBONE (Simulated Telemetry)
+  # ==========================================
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.82.0
+    container_name: apoe-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./telemetry/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317" # OTLP gRCP
+      - "4318:4318" # OTLP HTTP
+    depends_on:
+      - prometheus
+
+  prometheus:
+    image: prom/prometheus:v2.46.0
+    container_name: apoe-prometheus
+    volumes:
+      - ./telemetry/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+
+  # ==========================================
+  # CHAOS INJECTOR (Failure Injector)
+  # ==========================================
+  chaos-injector:
+    build:
+      context: ./chaos-injector
+    container_name: apoe-chaos-injector
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock # Allows control of docker resources
+    environment:
+      - TELEMETRY_PROMETHEUS=http://prometheus:9090
+      - POSTGRES_USER=apoe_user
+      - POSTGRES_PASSWORD=apoe_secure_pass
+      - REDIS_HOST=redis
+    ports:
+      - "9999:9999" # Rest endpoint to trigger chaos
+
+volumes:
+  postgres_data:
+  redis_data:
