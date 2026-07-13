@@ -169,6 +169,31 @@ services:
     ports:
       - "9999:9999" # Rest endpoint to trigger chaos
 
+  # ==========================================
+  # ACTIVE AGENT ORCHESTRATOR (APOE Brain)
+  # ==========================================
+  agent-orchestrator:
+    build:
+      context: ../agent-orchestrator
+    container_name: apoe-agent-orchestrator
+    ports:
+      - "8085:8085"
+    environment:
+      - APOE_ENVIRONMENT=lab
+      - APOE_PROMETHEUS_URL=http://prometheus:9090
+      - APOE_POSTGRES_DSN=postgresql://apoe_user:apoe_secure_pass@postgres:5432/enterprise_db
+      - APOE_REDIS_URL=redis://redis:6379/0
+      - APOE_KAFKA_BOOTSTRAP=kafka:29092
+      - APOE_CHAOS_INJECTOR_URL=http://chaos-injector:9999
+      - APOE_OTEL_ENDPOINT=http://otel-collector:4317
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
 volumes:
   postgres_data:
   redis_data:

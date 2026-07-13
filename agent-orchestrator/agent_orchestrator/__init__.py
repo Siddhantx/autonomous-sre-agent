@@ -1,0 +1,3 @@
+"""APOE Active Agent Orchestrator (V1)."""
+
+__version__ = "1.0.0"
