@@ -1,0 +1,66 @@
+"""Environment-driven configuration for the APOE Active Agent Orchestrator.
+
+All settings are sourced from environment variables (prefix ``APOE_``) via
+``pydantic-settings``. Defaults intentionally mirror the lab ``docker-compose``
+network so the orchestrator boots inside the enterprise lab with zero flags,
+while every value — including credentials — remains overridable from the
+environment. No secrets are hardcoded; the DSN defaults reference the lab's
+well-known sandbox credentials only.
+"""
+
+from __future__ import annotations
+
+from functools import lru_cache
+from pathlib import Path
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_DEFAULT_POLICY_PATH = Path(__file__).resolve().parent / "policies.yaml"
+
+
+class Settings(BaseSettings):
+    """Typed, validated orchestrator configuration."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="APOE_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    # --- Identity -----------------------------------------------------------
+    service_name: str = "agent-orchestrator"
+    environment: str = "lab"
+    log_level: str = "INFO"
+
+    # --- External systems ---------------------------------------------------
+    prometheus_url: str = "http://prometheus:9090"
+    postgres_dsn: str = Field(
+        default="postgresql://apoe_user:apoe_secure_pass@postgres:5432/enterprise_db",
+        description="asyncpg-compatible DSN. Override in production with a secret.",
+    )
+    redis_url: str = "redis://redis:6379/0"
+    kafka_bootstrap: str = "kafka:29092"
+    chaos_injector_url: str = "http://chaos-injector:9999"
+
+    # --- OpenTelemetry ------------------------------------------------------
+    otel_enabled: bool = True
+    otel_endpoint: str = "http://otel-collector:4317"
+
+    # --- Resilience / behaviour --------------------------------------------
+    agent_timeout_seconds: float = 10.0
+    max_retry_attempts: int = 5
+    retry_backoff_seconds: float = 1.0
+    retry_backoff_max_seconds: float = 15.0
+
+    # --- Safety -------------------------------------------------------------
+    safety_policy_path: Path = _DEFAULT_POLICY_PATH
+    # When true, remediation is planned and evaluated but never executed.
+    dry_run: bool = False
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    """Return a process-wide cached ``Settings`` instance."""
+    return Settings()

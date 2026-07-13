@@ -1,0 +1,39 @@
+# APOE remediation safety policy (compiled by agent_orchestrator/safety.py).
+#
+# Default-deny: an action is executed only if a rule below explicitly allows it
+# AND the diagnosis confidence clears the rule's floor. Edit and version this
+# file to change what the orchestrator is permitted to do autonomously.
+version: 1
+default_effect: deny
+
+rules:
+  # High-confidence, idempotent, well-understood: terminating the lead blocking
+  # Postgres backend to break a deadlock. Requires strong confidence.
+  - name: allow-terminate-blocking-queries
+    effect: allow
+    match:
+      action_types: ["terminate_blocking_queries"]
+      targets: ["postgres"]
+      min_confidence: 0.9
+
+  # Resetting the lab chaos sandbox is inherently idempotent and non-destructive
+  # to real data (it only clears injected faults).
+  - name: allow-reset-chaos-sandbox
+    effect: allow
+    match:
+      action_types: ["reset_chaos_sandbox"]
+      targets: ["chaos-injector"]
+      min_confidence: 0.6
+
+  # No-ops are always safe.
+  - name: allow-noop
+    effect: allow
+    match:
+      action_types: ["noop"]
+
+  # Explicit belt-and-suspenders deny for cache flushes until a human signs off
+  # on which keys are safe to evict automatically.
+  - name: deny-cache-flush
+    effect: deny
+    match:
+      action_types: ["flush_cache_key"]
