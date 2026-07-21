@@ -25,7 +25,12 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from pydantic import BaseModel
 
-from .approvals import AlreadyResolved, ApprovalQueue, PendingApproval
+from .approvals import (
+    AlreadyResolved,
+    ApprovalQueue,
+    PendingApproval,
+    promotion_candidates,
+)
 from .audit import audit_event
 from .blackboard import Blackboard, UnknownIncident
 from .config import get_settings
@@ -188,6 +193,7 @@ async def approve_action(
         rationale=item.action.rationale,
         actor=actor,
         approval_id=approval_id,
+        target=item.action.target,
     )
     applied = orchestrator.blackboard.applied_idempotency_keys(item.incident_id)
     result = await orchestrator.remediation.execute(item.action, applied)
@@ -221,5 +227,13 @@ async def reject_action(approval_id: str, req: RejectRequest) -> PendingApproval
         rationale=req.reason,
         actor=req.actor,
         approval_id=approval_id,
+        target=item.action.target,
     )
     return item
+
+
+@app.get("/policy/suggestions")
+async def policy_suggestions() -> list[dict[str, Any]]:
+    """Auto-allow candidates from repeated human approvals. Read-only —
+    a human reviews the suggested YAML and merges it into policies.yaml."""
+    return promotion_candidates(app.state.settings)

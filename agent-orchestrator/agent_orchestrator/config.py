@@ -92,6 +92,9 @@ class Settings(BaseSettings):
     # mutating requests are rejected (default-deny).
     api_key: str = ""
     audit_log_path: Path = Path("apoe_audit.jsonl")
+    # Consecutive human approvals of one (action, target) before APOE suggests
+    # promoting it to an auto-allow policy rule (human merges; never automatic).
+    promotion_threshold: int = 3
 
 
 @lru_cache(maxsize=1)
