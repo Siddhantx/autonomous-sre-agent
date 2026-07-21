@@ -63,21 +63,23 @@ class CompiledPolicy:
     def evaluate(self, action: ProposedAction, confidence: float) -> SafetyVerdict:
         for rule in self.policy.rules:
             if rule.matches(action, confidence):
-                allowed = rule.effect.lower() == "allow"
+                effect = rule.effect.lower()
                 return SafetyVerdict(
                     action=action,
-                    allowed=allowed,
+                    allowed=effect == "allow",
+                    requires_approval=effect == "approval_required",
                     policy=rule.name,
                     reason=(
-                        f"rule '{rule.name}' {rule.effect}s "
+                        f"rule '{rule.name}' -> {effect} for "
                         f"{action.action_type.value} on {action.target} "
                         f"(confidence {confidence:.2f})"
                     ),
                 )
-        allowed = self.policy.default_effect.lower() == "allow"
+        effect = self.policy.default_effect.lower()
         return SafetyVerdict(
             action=action,
-            allowed=allowed,
+            allowed=effect == "allow",
+            requires_approval=effect == "approval_required",
             policy="__default__",
             reason=f"no rule matched; default_effect={self.policy.default_effect}",
         )
@@ -85,7 +87,7 @@ class CompiledPolicy:
 
 def compile_policy(policy: SafetyPolicy) -> CompiledPolicy:
     """Validate and compile a policy. Raises on a policy that cannot be honoured."""
-    valid = {"allow", "deny"}
+    valid = {"allow", "deny", "approval_required"}
     if policy.default_effect.lower() not in valid:
         raise ValueError(f"invalid default_effect: {policy.default_effect}")
     for rule in policy.rules:
