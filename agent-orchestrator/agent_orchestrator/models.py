@@ -135,6 +135,7 @@ class SafetyVerdict(BaseModel):
 
     action: ProposedAction
     allowed: bool
+    requires_approval: bool = False  # effect=approval_required: queue, don't run
     policy: str            # name of the deciding policy rule
     reason: str
 

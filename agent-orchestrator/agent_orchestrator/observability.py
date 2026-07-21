@@ -35,6 +35,16 @@ def _ensure_required_context(_: Any, __: str, event: dict[str, Any]) -> dict[str
     return event
 
 
+def _dry_run_processor(dry_run: bool):
+    """Stamp the dry_run flag onto every log record."""
+
+    def processor(_: Any, __: str, event: dict[str, Any]) -> dict[str, Any]:
+        event.setdefault("dry_run", dry_run)
+        return event
+
+    return processor
+
+
 def configure_observability(settings: Settings) -> None:
     """Idempotently configure structlog + OpenTelemetry providers."""
     global _CONFIGURED
@@ -52,6 +62,7 @@ def configure_observability(settings: Settings) -> None:
             structlog.processors.add_log_level,
             _add_severity,
             _ensure_required_context,
+            _dry_run_processor(settings.dry_run),
             structlog.processors.TimeStamper(fmt="iso", key="timestamp", utc=True),
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
@@ -83,6 +94,8 @@ def configure_observability(settings: Settings) -> None:
             {
                 "service.name": settings.service_name,
                 "deployment.environment": settings.environment,
+                # Resource attribute -> present on every exported span.
+                "apoe.dry_run": settings.dry_run,
             }
         )
         tracer_provider = TracerProvider(resource=resource)

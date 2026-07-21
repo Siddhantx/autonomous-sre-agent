@@ -77,6 +77,12 @@ class Settings(BaseSettings):
     knowledge_db_path: Path = Path("apoe_knowledge.db")
     runbooks_path: Path = Path(__file__).resolve().parents[1] / "runbooks"
 
+    # --- Governance ---------------------------------------------------------
+    # Required by every mutating endpoint (X-API-Key header). Empty = all
+    # mutating requests are rejected (default-deny).
+    api_key: str = ""
+    audit_log_path: Path = Path("apoe_audit.jsonl")
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

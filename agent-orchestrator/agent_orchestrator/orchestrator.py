@@ -17,6 +17,8 @@ import uuid
 from opentelemetry import trace
 
 from .agents import DiagnosticAgent, default_agents, run_all
+from .approvals import ApprovalQueue
+from .audit import audit_event
 from .blackboard import Blackboard
 from .config import Settings
 from .connectors import Connectors
@@ -41,16 +43,18 @@ class Orchestrator:
         policy: CompiledPolicy | None = None,
         llm: LLMClient | None = None,
         knowledge: KnowledgeStore | None = None,
+        approvals: ApprovalQueue | None = None,
     ) -> None:
         self._settings = settings
         self._connectors = connectors
         self.blackboard = blackboard or Blackboard()
         self._agents = agents if agents is not None else default_agents()
         self._policy = policy or load_policy(settings.safety_policy_path)
-        self._remediation = RemediationEngine(settings, connectors)
+        self.remediation = RemediationEngine(settings, connectors)
         # Investigator is disabled unless a model is configured or injected.
         self._llm = llm or (make_llm_client(settings) if settings.llm_model else None)
         self._knowledge = knowledge
+        self._approvals = approvals
 
     async def handle_incident(self, trigger: str) -> IncidentSession:
         """Run the full pipeline for a new incident and return the record."""
@@ -138,29 +142,59 @@ class Orchestrator:
             return
 
         self.blackboard.transition(incident_id, IncidentState.PLANNING)
-        approved = []
+        approved, queued = [], []
         for action in diagnosis.proposed_actions:
             verdict = self._policy.evaluate(action, diagnosis.confidence)
             self.blackboard.add_verdict(incident_id, verdict)
+            audit_event(
+                self._settings, "proposed",
+                incident_id=incident_id,
+                action_type=action.action_type.value,
+                rationale=action.rationale,
+                policy=verdict.policy,
+                allowed=verdict.allowed,
+                requires_approval=verdict.requires_approval,
+            )
             log.info(
                 "safety_verdict",
                 action=action.action_type.value,
                 allowed=verdict.allowed,
+                requires_approval=verdict.requires_approval,
                 policy=verdict.policy,
             )
             if verdict.allowed:
                 approved.append(action)
+            elif verdict.requires_approval and self._approvals is not None:
+                queued.append(
+                    self._approvals.enqueue(incident_id, action, diagnosis.confidence)
+                )
+
+        if queued:
+            log.info(
+                "approvals_queued",
+                approval_ids=[q.approval_id for q in queued],
+            )
 
         if not approved:
             self.blackboard.transition(incident_id, IncidentState.ESCALATED)
-            log.info("incident_blocked_by_policy")
+            log.info(
+                "incident_blocked_by_policy", pending_approvals=len(queued)
+            )
             return
 
         self.blackboard.transition(incident_id, IncidentState.REMEDIATING)
         for action in approved:
             applied = self.blackboard.applied_idempotency_keys(incident_id)
-            result = await self._remediation.execute(action, applied)
+            result = await self.remediation.execute(action, applied)
             self.blackboard.add_result(incident_id, result)
+            audit_event(
+                self._settings, "executed",
+                incident_id=incident_id,
+                action_type=action.action_type.value,
+                rationale=action.rationale,
+                status=result.status.value,
+                detail=result.detail,
+            )
 
         failed = any(
             r.status is RemediationStatus.FAILED for r in session.results
