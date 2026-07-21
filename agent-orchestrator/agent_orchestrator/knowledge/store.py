@@ -119,6 +119,29 @@ class KnowledgeStore:
         rows = self._conn.execute(sql, params).fetchall()
         return [json.loads(row[0].splitlines()[-1]) for row in rows]
 
+    def similar_incidents(self, query: str, n: int = 3) -> list[dict[str, Any]]:
+        """Past incidents matching the query, WITH their outcomes.
+
+        Outcome-aware retrieval: what actually resolved (or failed) before
+        ranks above generic prose when the investigator forms hypotheses.
+        """
+        terms = [t.replace('"', "") for t in query.split() if t.replace('"', "")]
+        if not terms:
+            return []
+        match = " OR ".join(f'"{t}"' for t in terms)
+        rows = self._conn.execute(
+            "SELECT content FROM knowledge WHERE knowledge MATCH ? "
+            "AND kind = 'incident' ORDER BY rank LIMIT ?",
+            (match, n),
+        ).fetchall()
+        records = []
+        for row in rows:
+            try:
+                records.append(json.loads(row[0].splitlines()[-1]))
+            except (json.JSONDecodeError, IndexError):
+                continue
+        return records
+
     def add_post_mortem(self, session: IncidentSession) -> None:
         """Append the structured outcome of one incident (the learning loop)."""
         d = session.diagnosis

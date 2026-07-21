@@ -282,6 +282,26 @@ def test_to_diagnosis_clamps_confidence():
     assert _to_diagnosis({"confidence": -1.0, "rationale": ""}).confidence == 0.0
 
 
+def test_to_diagnosis_parses_differential_hypotheses():
+    d = _to_diagnosis({
+        "root_cause": "kafka_poison_pill", "confidence": 0.8, "rationale": "r",
+        "hypotheses": [
+            {"root_cause": "kafka_poison_pill", "confidence": 0.8,
+             "evidence_for": ["lag pinned on partition 0"],
+             "evidence_against": []},
+            {"root_cause": "kafka_consumer_lag", "confidence": 0.3,
+             "evidence_for": ["lag rising"],
+             "evidence_against": ["other partitions drain fine"]},
+            {"root_cause": "alien_invasion", "confidence": 0.9},  # dropped
+            {"root_cause": "disk_fill", "confidence": "not-a-number"},  # dropped
+        ],
+    })
+    assert [h.root_cause for h in d.hypotheses] == [
+        RootCause.KAFKA_POISON_PILL, RootCause.KAFKA_CONSUMER_LAG,
+    ]
+    assert d.hypotheses[1].evidence_against == ["other partitions drain fine"]
+
+
 # ---------------------------------------------------------------------------
 # Tool handlers (fake connectors, no infra)
 # ---------------------------------------------------------------------------
