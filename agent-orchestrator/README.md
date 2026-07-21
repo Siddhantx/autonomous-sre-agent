@@ -71,8 +71,15 @@ the harness**. Results: [`evals/RESULTS.md`](evals/RESULTS.md).
 
 | Mode | Command | Needs |
 |---|---|---|
-| Offline / CI | `python evals/run_evals.py --fake-llm` | nothing |
+| Offline / CI (scripted LLM) | `python evals/run_evals.py --fake-llm` | nothing |
+| Real local model, offline | `python evals/run_evals.py --ollama <model>` | Ollama |
 | Live lab | `python evals/run_evals.py --live` | docker lab + `APOE_LLM_*` |
+
+Measured results: [`evals/RESULTS.md`](evals/RESULTS.md) (scripted — the
+architecture ceiling and CI gate) and
+[`evals/RESULTS-local-llm.md`](evals/RESULTS-local-llm.md) (qwen2.5:3b on an
+8GB CPU-only laptop: 27% root-cause accuracy vs the 0% rules baseline, 60%
+correct escalation, **0 unsafe actions in 30 runs**).
 
 ## Module map
 
