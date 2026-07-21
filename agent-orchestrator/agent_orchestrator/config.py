@@ -44,6 +44,13 @@ class Settings(BaseSettings):
     kafka_bootstrap: str = "kafka:29092"
     chaos_injector_url: str = "http://chaos-injector:9999"
     loki_url: str = "http://loki:3100"
+    # Kubernetes (empty = provider disabled). In-cluster: https://kubernetes.default.svc
+    k8s_api_url: str = ""
+    k8s_namespace: str = "default"
+    k8s_token_path: Path = Path(
+        "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    )
+    k8s_ca_path: str = ""  # empty = system CA bundle
 
     # --- OpenTelemetry ------------------------------------------------------
     otel_enabled: bool = True

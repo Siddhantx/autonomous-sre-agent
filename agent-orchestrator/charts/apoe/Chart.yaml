@@ -1,0 +1,8 @@
+apiVersion: v2
+name: apoe
+description: >-
+  APOE autonomous SRE agent - rule-based fast path + safety-gated LLM
+  investigator with default-deny policy, approval workflow and audit log.
+type: application
+version: 0.1.0
+appVersion: "2.0"

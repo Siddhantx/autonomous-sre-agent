@@ -236,6 +236,76 @@ class KafkaConnector:
             await consumer.stop()
 
 
+class K8sConnector:
+    """Read-only Kubernetes API access (pods + events). Raw httpx, no SDK."""
+
+    def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None):
+        self._settings = settings
+        if client is not None:
+            self._client = client
+        else:
+            headers = {}
+            try:
+                token = settings.k8s_token_path.read_text(encoding="utf-8").strip()
+                headers["Authorization"] = f"Bearer {token}"
+            except OSError:
+                pass  # out-of-cluster dev setups may use an unauthenticated proxy
+            self._client = httpx.AsyncClient(
+                base_url=settings.k8s_api_url,
+                headers=headers,
+                verify=settings.k8s_ca_path or True,
+                timeout=10.0,
+            )
+
+    async def pod_states(self, namespace: str | None = None) -> list[dict[str, Any]]:
+        ns = namespace or self._settings.k8s_namespace
+        resp = await self._client.get(f"/api/v1/namespaces/{ns}/pods")
+        resp.raise_for_status()
+        pods = []
+        for item in resp.json().get("items", []):
+            statuses = item.get("status", {}).get("containerStatuses", []) or []
+            pods.append(
+                {
+                    "name": item.get("metadata", {}).get("name"),
+                    "phase": item.get("status", {}).get("phase"),
+                    "restarts": sum(s.get("restartCount", 0) for s in statuses),
+                    "waiting_reasons": [
+                        s["state"]["waiting"]["reason"]
+                        for s in statuses
+                        if s.get("state", {}).get("waiting", {}).get("reason")
+                    ],
+                }
+            )
+        return pods
+
+    async def events(self, namespace: str | None = None) -> list[dict[str, Any]]:
+        ns = namespace or self._settings.k8s_namespace
+        resp = await self._client.get(
+            f"/api/v1/namespaces/{ns}/events",
+            params={"limit": "50"},
+        )
+        resp.raise_for_status()
+        events = [
+            {
+                "type": item.get("type"),
+                "reason": item.get("reason"),
+                "object": item.get("involvedObject", {}).get("name"),
+                "message": (item.get("message") or "")[:200],
+                "count": item.get("count", 1),
+                "last_seen": item.get("lastTimestamp"),
+            }
+            for item in resp.json().get("items", [])
+        ]
+        # Warnings first, then most recent
+        events.sort(
+            key=lambda e: (e["type"] != "Warning", str(e["last_seen"] or "")),
+        )
+        return events[:30]
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
+
+
 class LokiConnector:
     """Read-only log search against a Loki-compatible API."""
 
@@ -312,6 +382,7 @@ class Connectors:
         self.redis = RedisConnector(settings)
         self.kafka = KafkaConnector(settings)
         self.loki = LokiConnector(settings)
+        self.k8s = K8sConnector(settings) if settings.k8s_api_url else None
         self.chaos = ChaosConnector(settings)
 
     async def aclose(self) -> None:
@@ -319,4 +390,6 @@ class Connectors:
         await self.postgres.aclose()
         await self.redis.aclose()
         await self.loki.aclose()
+        if self.k8s is not None:
+            await self.k8s.aclose()
         await self.chaos.aclose()
