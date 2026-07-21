@@ -244,6 +244,45 @@ def test_post_mortem_without_diagnosis():
     assert row[0].startswith("unknown")
 
 
+async def test_similar_incidents_outcome_aware_injection():
+    from agent_orchestrator.investigator import LLMResponse, investigate
+    from types import SimpleNamespace
+
+    store = KnowledgeStore()
+    store.add_post_mortem(make_closed_session())  # db_lock resolved via terminate
+    assert store.similar_incidents("pid blocking postgres")[0]["final_state"] \
+        == "resolved"
+    assert store.similar_incidents("") == []
+
+    bb = Blackboard()
+    session = bb.create("inc-sim", "test")
+    session.findings.append(
+        Finding(agent_name="db-lock-agent", subsystem="postgres",
+                status=SubsystemStatus.FAULTED, severity=Severity.CRITICAL,
+                summary="pid 42 blocking others")
+    )
+
+    class OneShot:
+        def __init__(self):
+            self.calls = []
+
+        async def complete(self, messages, max_tokens):
+            self.calls.append(messages)
+            return LLMResponse(
+                text='{"action": "diagnose", "root_cause": "db_lock_contention", '
+                     '"confidence": 0.9, "rationale": "match"}',
+                tokens=10,
+            )
+
+    llm = OneShot()
+    await investigate(session, bb, SimpleNamespace(),
+                      Settings(investigator_timeout_s=5.0), llm, store)
+    first = llm.calls[0][1]["content"]
+    assert "Similar past incidents and their outcomes:" in first
+    assert "db_lock_contention -> resolved" in first
+    assert "terminate_blocking_queries=applied" in first
+
+
 def test_post_mortem_upserts_on_same_incident():
     store = KnowledgeStore()
     session = make_closed_session()

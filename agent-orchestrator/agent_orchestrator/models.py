@@ -124,6 +124,17 @@ class ProposedAction(BaseModel):
         return f"{self.action_type.value}:{self.target}:{items}"
 
 
+class Hypothesis(BaseModel):
+    """One candidate explanation in a differential diagnosis."""
+
+    model_config = ConfigDict(frozen=True)
+
+    root_cause: RootCause
+    confidence: float = Field(ge=0.0, le=1.0)
+    evidence_for: list[str] = Field(default_factory=list)
+    evidence_against: list[str] = Field(default_factory=list)
+
+
 class Diagnosis(BaseModel):
     """The reasoner's conclusion for an incident."""
 
@@ -134,6 +145,8 @@ class Diagnosis(BaseModel):
     rationale: str
     evidence: list[str] = Field(default_factory=list)  # finding summaries
     proposed_actions: list[ProposedAction] = Field(default_factory=list)
+    # The differential: ranked candidates considered, incl. the rejected ones.
+    hypotheses: list[Hypothesis] = Field(default_factory=list)
 
 
 class SafetyVerdict(BaseModel):

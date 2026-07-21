@@ -36,6 +36,7 @@ from .knowledge import KnowledgeStore
 from .models import (
     ActionType,
     Diagnosis,
+    Hypothesis,
     IncidentSession,
     ProposedAction,
     RootCause,
@@ -428,7 +429,15 @@ Available tools: %s
  "confidence": 0.0-1.0, "rationale": "...",
  "evidence": ["[tool_name] what it showed", ...],
  "proposed_actions": [{"action_type": "<one of: %s>",
-                       "target": "...", "params": {}, "rationale": "..."}]}
+                       "target": "...", "params": {}, "rationale": "..."}],
+ "hypotheses": [{"root_cause": "...", "confidence": 0.0-1.0,
+                 "evidence_for": [...], "evidence_against": [...]}]}
+
+Work like a differential diagnosis: maintain 2-3 ranked hypotheses and
+choose tool calls that DISCRIMINATE between them (a result that would
+confirm one and rule out another beats one that confirms what you already
+believe). Report the full differential in "hypotheses", including the
+candidates you rejected and the evidence that killed them.
 
 Rules:
 - Most incidents follow a change. Weigh the recent changes in your context
@@ -491,6 +500,22 @@ def _to_diagnosis(payload: dict[str, Any]) -> Diagnosis:
             " escalating those to a human]"
         )
 
+    hypotheses: list[Hypothesis] = []
+    for raw in payload.get("hypotheses", []) or []:
+        try:
+            hypotheses.append(
+                Hypothesis(
+                    root_cause=RootCause(str(raw.get("root_cause", ""))),
+                    confidence=min(max(float(raw.get("confidence", 0.0)), 0.0), 1.0),
+                    evidence_for=[str(e) for e in raw.get("evidence_for", []) or []],
+                    evidence_against=[
+                        str(e) for e in raw.get("evidence_against", []) or []
+                    ],
+                )
+            )
+        except (ValueError, TypeError):
+            continue  # unknown root cause or malformed entry: drop silently
+
     confidence = min(max(float(payload.get("confidence", 0.0)), 0.0), 1.0)
     return Diagnosis(
         root_cause=root_cause,
@@ -498,6 +523,7 @@ def _to_diagnosis(payload: dict[str, Any]) -> Diagnosis:
         rationale=rationale,
         evidence=[str(e) for e in payload.get("evidence", []) or []],
         proposed_actions=actions,
+        hypotheses=hypotheses,
     )
 
 
@@ -564,6 +590,22 @@ async def _loop(
         if hits:
             knowledge_block = "\n\nKnowledge base (pre-searched):\n" + "\n".join(
                 f"- [{h.kind}] {h.title} ({h.ref}): {h.snippet}" for h in hits
+            )
+        # Outcome-aware: what resolved similar incidents before beats prose.
+        similar = knowledge.similar_incidents(seed, n=3)
+        if similar:
+            knowledge_block += (
+                "\n\nSimilar past incidents and their outcomes:\n" + "\n".join(
+                    f"- {r.get('root_cause', '?')} -> {r.get('final_state', '?')}"
+                    + (
+                        "; actions: " + ", ".join(
+                            f"{a['action']}={a['status']}" for a in r["actions"]
+                        )
+                        if r.get("actions")
+                        else "; no actions taken"
+                    )
+                    for r in similar
+                )
             )
         # "What changed?" — always injected, never left to the model to ask.
         changes = knowledge.recent_changes(5)
