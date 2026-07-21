@@ -12,7 +12,8 @@ never have to remember them.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from collections.abc import Callable, MutableMapping
+from typing import Any, cast
 
 import structlog
 from opentelemetry import metrics, trace
@@ -22,23 +23,27 @@ from .config import Settings
 _CONFIGURED = False
 
 
-def _add_severity(_: Any, method: str, event: dict[str, Any]) -> dict[str, Any]:
+_EventDict = MutableMapping[str, Any]
+_Processor = Callable[[Any, str, _EventDict], _EventDict]
+
+
+def _add_severity(_: Any, method: str, event: _EventDict) -> _EventDict:
     """Map structlog level to the required ``severity`` field."""
     event.setdefault("severity", event.get("level", method).upper())
     return event
 
 
-def _ensure_required_context(_: Any, __: str, event: dict[str, Any]) -> dict[str, Any]:
+def _ensure_required_context(_: Any, __: str, event: _EventDict) -> _EventDict:
     """Guarantee the mandated keys are always present (defaults if unbound)."""
     event.setdefault("incident_id", "-")
     event.setdefault("agent_name", "orchestrator")
     return event
 
 
-def _dry_run_processor(dry_run: bool):
+def _dry_run_processor(dry_run: bool) -> _Processor:
     """Stamp the dry_run flag onto every log record."""
 
-    def processor(_: Any, __: str, event: dict[str, Any]) -> dict[str, Any]:
+    def processor(_: Any, __: str, event: _EventDict) -> _EventDict:
         event.setdefault("dry_run", dry_run)
         return event
 
@@ -117,7 +122,7 @@ def configure_observability(settings: Settings) -> None:
 
 
 def get_logger(name: str = "orchestrator") -> structlog.stdlib.BoundLogger:
-    return structlog.get_logger(name)
+    return cast(structlog.stdlib.BoundLogger, structlog.get_logger(name))
 
 
 def get_tracer() -> trace.Tracer:

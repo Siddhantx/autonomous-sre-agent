@@ -141,7 +141,7 @@ def make_llm_client(settings: Settings) -> LLMClient:
 # ---------------------------------------------------------------------------
 # Read-only tools. SQL is authored HERE, never by the LLM.
 # ---------------------------------------------------------------------------
-async def _pg_stat_activity(args: dict, ctx: ToolContext) -> Any:
+async def _pg_stat_activity(args: dict[str, Any], ctx: ToolContext) -> Any:
     return await ctx.connectors.postgres.fetch(
         """
         SELECT pid, state, wait_event_type, wait_event,
@@ -154,11 +154,11 @@ async def _pg_stat_activity(args: dict, ctx: ToolContext) -> Any:
     )
 
 
-async def _pg_blocking(args: dict, ctx: ToolContext) -> Any:
+async def _pg_blocking(args: dict[str, Any], ctx: ToolContext) -> Any:
     return await ctx.connectors.postgres.blocking_backends()
 
 
-async def _pg_table_stats(args: dict, ctx: ToolContext) -> Any:
+async def _pg_table_stats(args: dict[str, Any], ctx: ToolContext) -> Any:
     return await ctx.connectors.postgres.fetch(
         """
         SELECT relname, seq_scan, idx_scan, n_live_tup, n_dead_tup,
@@ -170,44 +170,44 @@ async def _pg_table_stats(args: dict, ctx: ToolContext) -> Any:
     )
 
 
-async def _pg_explain(args: dict, ctx: ToolContext) -> Any:
+async def _pg_explain(args: dict[str, Any], ctx: ToolContext) -> Any:
     query = str(args.get("query", "")).strip()
     if ";" in query or not query.lower().startswith(("select", "with")):
         return {"error": "only single SELECT/WITH statements may be explained"}
     return await ctx.connectors.postgres.fetch(f"EXPLAIN (FORMAT JSON) {query}")
 
 
-async def _redis_info(args: dict, ctx: ToolContext) -> Any:
+async def _redis_info(args: dict[str, Any], ctx: ToolContext) -> Any:
     return await ctx.connectors.redis.info()
 
 
-async def _redis_slowlog(args: dict, ctx: ToolContext) -> Any:
+async def _redis_slowlog(args: dict[str, Any], ctx: ToolContext) -> Any:
     return await ctx.connectors.redis.slowlog(25)
 
 
-async def _redis_key_sample(args: dict, ctx: ToolContext) -> Any:
+async def _redis_key_sample(args: dict[str, Any], ctx: ToolContext) -> Any:
     return await ctx.connectors.redis.key_sample(20)
 
 
-async def _kafka_consumer_lag(args: dict, ctx: ToolContext) -> Any:
+async def _kafka_consumer_lag(args: dict[str, Any], ctx: ToolContext) -> Any:
     group = str(args.get("group_id", "payment-processors"))
     topic = str(args.get("topic", "order-events"))
     lag = await ctx.connectors.kafka.total_consumer_lag(group, topic)
     return {"group_id": group, "topic": topic, "lag": lag}
 
 
-async def _kafka_topic_desc(args: dict, ctx: ToolContext) -> Any:
+async def _kafka_topic_desc(args: dict[str, Any], ctx: ToolContext) -> Any:
     return await ctx.connectors.kafka.topic_offsets(
         str(args.get("topic", "order-events"))
     )
 
 
-async def _prometheus_query(args: dict, ctx: ToolContext) -> Any:
+async def _prometheus_query(args: dict[str, Any], ctx: ToolContext) -> Any:
     promql = str(args.get("query", ""))
     return {"query": promql, "value": await ctx.connectors.prometheus.instant_query(promql)}
 
 
-async def _prometheus_range(args: dict, ctx: ToolContext) -> Any:
+async def _prometheus_range(args: dict[str, Any], ctx: ToolContext) -> Any:
     return await ctx.connectors.prometheus.range_query(
         str(args.get("query", "")),
         str(args.get("start", "")),
@@ -216,7 +216,7 @@ async def _prometheus_range(args: dict, ctx: ToolContext) -> Any:
     )
 
 
-async def _code_search(args: dict, ctx: ToolContext) -> Any:
+async def _code_search(args: dict[str, Any], ctx: ToolContext) -> Any:
     """Grep the lab service sources. stdlib only; small tree, no index needed."""
     pattern = str(args.get("pattern", "")).lower()
     if not pattern:
@@ -239,7 +239,7 @@ async def _code_search(args: dict, ctx: ToolContext) -> Any:
     return matches or {"info": "no matches"}
 
 
-async def _knowledge_search(args: dict, ctx: ToolContext) -> Any:
+async def _knowledge_search(args: dict[str, Any], ctx: ToolContext) -> Any:
     if ctx.knowledge is None:
         return {"error": "knowledge store not configured"}
     query = str(args.get("query", ""))
@@ -252,7 +252,7 @@ async def _knowledge_search(args: dict, ctx: ToolContext) -> Any:
     ]
 
 
-async def _blackboard_context(args: dict, ctx: ToolContext) -> Any:
+async def _blackboard_context(args: dict[str, Any], ctx: ToolContext) -> Any:
     current = [
         {"agent": f.agent_name, "status": f.status.value, "summary": f.summary,
          "metrics": f.metrics}
@@ -296,7 +296,7 @@ TOOLS = {
 }
 
 
-async def _dispatch_tool(name: str, args: dict, ctx: ToolContext) -> str:
+async def _dispatch_tool(name: str, args: dict[str, Any], ctx: ToolContext) -> str:
     """Run one tool under a span; failures degrade to an error payload."""
     tracer = get_tracer()
     with tracer.start_as_current_span(f"investigator.tool.{name}") as span:
@@ -359,7 +359,7 @@ def _system_prompt() -> str:
     )
 
 
-def _parse_json(text: str) -> dict | None:
+def _parse_json(text: str) -> dict[str, Any] | None:
     """Parse the model reply, tolerating markdown fences."""
     text = text.strip()
     if text.startswith("```"):
@@ -373,7 +373,7 @@ def _parse_json(text: str) -> dict | None:
         return None
 
 
-def _to_diagnosis(payload: dict) -> Diagnosis:
+def _to_diagnosis(payload: dict[str, Any]) -> Diagnosis:
     """Map a diagnose payload onto the Diagnosis model, enforcing whitelists."""
     try:
         root_cause = RootCause(str(payload.get("root_cause", "")))

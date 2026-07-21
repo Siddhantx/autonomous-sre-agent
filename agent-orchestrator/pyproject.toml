@@ -1,0 +1,24 @@
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.mypy]
+strict = true
+python_version = "3.11"
+files = ["agent_orchestrator"]
+
+# Untyped third-party boundaries: no stubs exist for these.
+[[tool.mypy.overrides]]
+module = [
+    "asyncpg.*",
+    "aiokafka.*",
+    "opentelemetry.exporter.*",
+    "opentelemetry.sdk.*",
+]
+ignore_missing_imports = true
+
+# The connectors module wraps untyped clients (asyncpg/aiokafka rows are Any);
+# transport code, integration-tested against the live lab, not unit-typed.
+[[tool.mypy.overrides]]
+module = ["agent_orchestrator.connectors"]
+disable_error_code = ["no-any-return"]
