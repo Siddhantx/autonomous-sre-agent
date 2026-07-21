@@ -1,125 +1,110 @@
-# APOE — Active Agent Orchestrator (V1)
+# APOE — Autonomous Production Operations Engineer (V2)
 
-The central "brain" of the Autonomous AI Production Operations Engineer. When an
-incident is triggered, the orchestrator **observes** the running enterprise-lab
-subsystems with a fleet of diagnostic agents, **reasons** about the root cause,
-checks a **safety policy**, and executes **idempotent remediation** — emitting a
-single distributed trace and structured JSON logs for every step.
+The central "brain" of an AI application-support / SRE engineer. When an
+incident triggers, APOE **observes** the running enterprise-lab subsystems,
+**reasons** about the root cause — deterministic rules first, an LLM
+investigation agent when rules can't explain what it sees — checks a
+**default-deny safety policy** (with a human-approval queue for gated
+actions), and executes **idempotent remediation**. Every step is one
+distributed trace, structured JSON logs, and an append-only audit line.
 
-## Architecture
-
-Blackboard-based multi-agent control loop. One incident = one `IncidentSession`
-record on the blackboard, driven through an explicit state machine:
-
-```
-CREATED → DIAGNOSING → DIAGNOSED → PLANNING → REMEDIATING → RESOLVED
-                            │           │            │
-                            └──────────►└───────────►└──────► ESCALATED / FAILED
-```
+## V2 architecture
 
 ```
-              ┌─────────────────────────  Orchestrator  ─────────────────────────┐
-              │                                                                    │
-  trigger ──► │  1. observe        2. reason        3. plan          4. remediate │
-              │  ┌──────────┐      ┌─────────┐     ┌──────────┐     ┌───────────┐ │
-              │  │ agents   │────► │ reasoner│───► │ safety   │───► │remediation│ │
-              │  │ (gather, │ find │ (pure   │ dx  │ policy   │ ok  │ engine    │ │
-              │  │  10s TO) │ ings │  rules) │     │ compiler │     │(idempotent)│ │
-              │  └────┬─────┘      └─────────┘     └──────────┘     └─────┬─────┘ │
-              │       │                 ▲                                 │       │
-              │       ▼                 │            Blackboard           ▼       │
-              │  connectors  ◄──────────┴──── (state machine + findings) ────►    │
-              └───────┼────────────────────────────────────────────────────────┘
-                      ▼
-        Prometheus · Postgres · Redis · Kafka · chaos-injector
+ trigger ──► ┌────────────────────────── Orchestrator ──────────────────────────┐
+             │                                                                   │
+             │ 1. observe          2. reason                 3. plan   4. act    │
+             │ ┌──────────┐   ┌──────────────────────────┐  ┌────────┐ ┌───────┐ │
+             │ │ agents   │──►│ reasoner (5 pure rules)  │─►│ safety │►│remedi-│ │
+             │ │ (10s TO, │   │      │ UNKNOWN /         │  │ policy │ │ation  │ │
+             │ │ degrade) │   │      ▼ conf < 0.7        │  │(default│ │(idem- │ │
+             │ └────┬─────┘   │ ┌──────────────────────┐ │  │ -deny) │ │potent)│ │
+             │      │         │ │ INVESTIGATOR (LLM)   │ │  └───┬────┘ └───┬───┘ │
+             │      │         │ │ ReAct loop, budgets, │ │      │approval  │     │
+             │      │         │ │ 14 read-only tools   │ │      ▼required  │     │
+             │      │         │ └──────────┬───────────┘ │  ┌────────┐    │     │
+             │      │         └────────────│─────────────┘  │approval│    │     │
+             │      ▼                      ▼                │ queue  │    ▼     │
+             │  Blackboard (state machine + findings)       │ + API  │  audit   │
+             │      ▲                      │                └────────┘  JSONL   │
+             │      │                      ▼                                     │
+             │      │         KNOWLEDGE STORE (SQLite FTS5)                      │
+             │      │         code · topology · runbooks · past incidents        │
+             │      │         (searched BEFORE live infra; post-mortem           │
+             │      │          appended on every terminal incident)              │
+             └──────┼────────────────────────────────────────────────────────────┘
+                    ▼
+       Prometheus · Postgres · Redis · Kafka · chaos-injector
 ```
 
-### Module responsibilities
+The LLM **proposes only**: its actions must map onto the `ActionType`
+whitelist enum and still pass the safety policy. There is no free-form
+shell or SQL execution path anywhere.
+
+## Quickstart
+
+```bash
+# 1. Bring up the lab + orchestrator (from enterprise-lab/)
+export APOE_API_KEY=choose-a-secret          # required for mutating endpoints
+cd enterprise-lab && docker compose up --build
+
+# 2. Drive a rule-covered incident end to end
+curl -X POST -H "X-API-Key: $APOE_API_KEY" http://localhost:8085/simulate/db-lock
+
+# 3. Run the eval harness — one command, no API spend
+cd ../agent-orchestrator && python evals/run_evals.py --fake-llm
+```
+
+To let the investigator use a real LLM, set `APOE_LLM_MODEL` (+ provider /
+key / base-url) — see [`.env.example`](.env.example). Local models work via
+any OpenAI-compatible endpoint (`APOE_LLM_PROVIDER=openai`,
+`APOE_LLM_BASE_URL=http://localhost:11434/v1` for Ollama).
+
+## The eval harness (proof of the thesis)
+
+`evals/run_evals.py` injects five faults **no deterministic rule covers**
+(connection-pool exhaustion, bad config deploy, slow-query regression,
+kafka poison pill, disk fill) and scores rules-only vs rules+investigator
+on root-cause accuracy, escalation correctness, time-to-diagnosis, and a
+hard gate: **any executed action without an allowing safety verdict fails
+the harness**. Results: [`evals/RESULTS.md`](evals/RESULTS.md).
+
+| Mode | Command | Needs |
+|---|---|---|
+| Offline / CI | `python evals/run_evals.py --fake-llm` | nothing |
+| Live lab | `python evals/run_evals.py --live` | docker lab + `APOE_LLM_*` |
+
+## Module map
 
 | Module | Responsibility |
 |---|---|
-| `config.py` | Env-driven `pydantic-settings`. No hardcoded secrets. |
-| `observability.py` | `structlog` JSON logging (every record carries `incident_id`, `agent_name`, `timestamp`, `severity`) + OpenTelemetry traces & metrics. |
-| `models.py` | All cross-boundary payloads as `pydantic` v2 models + enums. |
-| `blackboard.py` | Shared incident state, **validated** state-machine transitions, concurrency-safe finding appends, idempotency-key tracking. |
-| `connectors.py` | Async, `tenacity` exponential-backoff clients for Prometheus / Postgres / Redis / Kafka / chaos-injector. |
-| `agents.py` | Diagnostic agents. Per-agent `asyncio.wait_for` timeout; **graceful degradation** (a failed scrape → `degraded` finding, never a crash). |
-| `reasoner.py` | Pure, deterministic rule engine: findings → `Diagnosis` (root cause + confidence + proposed actions). |
-| `safety.py` | Compiles the declarative YAML safety policy into predicates; **default-deny**, ordered first-match, confidence-gated. |
-| `remediation.py` | Executes only safety-approved actions. Replay-safe at session level (idempotency keys) and action level (idempotent operations). |
-| `orchestrator.py` | The pipeline; one distributed trace per incident. |
-| `main.py` | FastAPI: trigger incidents and run the end-to-end chaos simulation. |
-| `policies.yaml` | The versioned, human-auditable safety policy. |
+| `config.py` | Env-driven settings (`APOE_` prefix). No hardcoded secrets. |
+| `models.py` | Every cross-boundary payload as pydantic v2 + enums. |
+| `blackboard.py` | Incident state machine (validated transitions) + findings. |
+| `agents.py` | Diagnostic agents: per-agent timeout, graceful degradation. |
+| `reasoner.py` | Pure rule engine — the deterministic fast path. |
+| `investigator.py` | LLM ReAct loop: budgets, 14 read-only tools, provider-agnostic client (Anthropic / any OpenAI-compatible / local). |
+| `knowledge/` | SQLite FTS5 store: lab code, topology, runbooks, incident post-mortems. Searched before live infra; learns from every incident. |
+| `safety.py` | Declarative YAML policy compiler: allow / deny / approval_required, confidence-gated, default-deny. |
+| `approvals.py` | Human-approval queue for gated actions. |
+| `remediation.py` | Idempotent execution engine (session + action level). |
+| `audit.py` | Append-only JSONL audit log of every action decision. |
+| `orchestrator.py` | The pipeline; one OTel trace per incident. |
+| `main.py` | FastAPI: incidents, simulation, approvals. API-key auth on all mutating endpoints. |
 
-### Design guarantees (mapped to the engineering bar)
-
-- **Type safety** — `pydantic` v2 everywhere; no untyped payloads on the critical path.
-- **Structured logging** — `structlog` JSON; mandated fields injected by processors + contextvars.
-- **Async first** — agents fan out via `asyncio.gather`, each under a 10s `wait_for`.
-- **Resilience** — every external call retries with `tenacity`; agents degrade, they never crash the run; an incident-level exception fails only that incident.
-- **Idempotency** — session-level idempotency keys + action-level idempotent operations (`pg_terminate_backend`, chaos `reset`, `DEL`).
-- **Safety** — default-deny policy compiler; low-confidence diagnoses cannot fire destructive actions.
-- **Observability** — OpenTelemetry traces + metrics; every incident is one trace.
-
-## Running the tests
-
-Critical modules (reasoner, safety compiler, blackboard) are pure — no live
-infra needed:
+## Tests
 
 ```bash
-cd agent-orchestrator
-python -m venv .venv && . .venv/Scripts/activate      # Windows: .venv\Scripts\activate
-pip install pydantic pydantic-settings PyYAML pytest pytest-asyncio pytest-cov
-pytest --cov=agent_orchestrator.reasoner \
-       --cov=agent_orchestrator.safety \
-       --cov=agent_orchestrator.blackboard --cov-report=term-missing
+pip install -r requirements.txt && pytest        # 69 tests, no live infra needed
 ```
 
-Current coverage on those modules is **97%** (bar: >85%).
+Coverage bar ≥85% on pure modules (currently: reasoner 96%, safety 100%,
+blackboard 100%, investigator 98%, knowledge 98–100%, approvals/audit 100%).
+CI (`.github/workflows/ci.yml`) runs ruff, mypy `--strict`, the test suite
+with the coverage gate, and the eval harness in fake-llm mode.
 
-## End-to-end incident simulation
+## Security & operations
 
-Bring up the whole lab (the orchestrator is wired into the compose file):
-
-```bash
-cd enterprise-lab
-docker compose up --build
-```
-
-Then drive a full autonomous incident. The `db-lock` scenario is the reliable
-end-to-end path (the DB-lock agent reads `pg_blocking_pids` directly):
-
-```bash
-# Inject a Postgres lock, wait for it to become observable, run the pipeline:
-curl -X POST http://localhost:8085/simulate/db-lock
-```
-
-Expected sequence in the JSON response / logs:
-
-1. chaos-injector holds `ACCESS EXCLUSIVE` on `orders`;
-2. `db-lock-agent` reports `FAULTED` with the blocking pid;
-3. reasoner → `db_lock_contention` (confidence 0.95), proposes
-   `terminate_blocking_queries`;
-4. safety policy allows it (confidence ≥ 0.9);
-5. remediation calls `pg_terminate_backend(pid)` — the lock releases;
-6. session transitions to `RESOLVED`.
-
-Other endpoints:
-
-```bash
-curl -X POST http://localhost:8085/incidents -d '{"trigger":"manual"}' -H 'content-type: application/json'
-curl     http://localhost:8085/incidents/<incident_id>
-curl -X POST http://localhost:8085/simulate/high-cpu   # demonstrates graceful degradation (no Prometheus series)
-```
-
-> Note: the lab services export OTLP traces but not Prometheus `/metrics`, so the
-> CPU/memory/kafka agents typically return **degraded** findings — an intentional
-> demonstration of the resilience contract. The DB-lock path exercises the full
-> observe→reason→act→resolve loop against real infrastructure.
-
-## Configuration
-
-All settings are `APOE_`-prefixed env vars — see [`.env.example`](.env.example).
-Defaults match the lab compose network; override every value (including the
-Postgres DSN) from the environment in production.
-```
+See [`SECURITY.md`](SECURITY.md) for the threat model, what data leaves the
+network per LLM provider choice, and air-gapped deployment. See
+[`DEMO.md`](DEMO.md) for a 5-minute reviewer walkthrough.

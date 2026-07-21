@@ -1,13 +1,25 @@
 # docker-compose.yml
 # Master simulation platform for APOE Enterprise Lab
 # Models a typical financial enterprise transaction processing system.
+#
+# Hardening notes:
+# - Image tags are pinned to exact versions. For production, pin by digest:
+#   docker compose pull && docker inspect --format='{{index .RepoDigests 0}}' <image>
+# - Every service has a healthcheck, a resource limit and a stop grace period.
+# - APOE_API_KEY is passed through from the host env — never hardcoded here.
+
+x-python-health: &py-health
+  interval: 15s
+  timeout: 5s
+  retries: 5
+  start_period: 20s
 
 services:
   # ==========================================
   # PERSISTENCE & DATA PIPELINES
   # ==========================================
   postgres:
-    image: postgres:15-alpine
+    image: postgres:15.7-alpine
     container_name: apoe-postgres
     environment:
       POSTGRES_DB: enterprise_db
@@ -17,6 +29,12 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U apoe_user -d enterprise_db"]
       interval: 10s
@@ -24,13 +42,19 @@ services:
       retries: 5
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.2-alpine
     container_name: apoe-redis
     ports:
       - "6379:6379"
     command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --appendonly yes
     volumes:
       - redis_data:/data
+    stop_grace_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 384M
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -57,6 +81,12 @@ services:
       KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
       KAFKA_LOG_DIRS: '/tmp/kraft-combined-logs'
       CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1024M
     healthcheck:
       test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list"]
       interval: 15s
@@ -67,12 +97,23 @@ services:
   # SIMULATED APPLICATION SERVICES
   # ==========================================
   api-gateway:
-    image: nginx:alpine
+    image: nginx:1.27-alpine
     container_name: apoe-api-gateway
     ports:
       - "8080:80"
     volumes:
       - ./gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+    stop_grace_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64M
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:80/ >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
     depends_on:
       order-service:
         condition: service_healthy
@@ -89,6 +130,15 @@ services:
       - REDIS_CONN=redis://redis:6379/0
       - KAFKA_BROKER=kafka:29092
       - OPENTELEMETRY_COLLECTOR_URL=http://otel-collector:4317
+    stop_grace_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8081/health', timeout=3)\""]
+      <<: *py-health
     depends_on:
       postgres:
         condition: service_healthy
@@ -109,6 +159,15 @@ services:
       - REDIS_CONN=redis://redis:6379/0
       - KAFKA_BROKER=kafka:29092
       - OPENTELEMETRY_COLLECTOR_URL=http://otel-collector:4317
+    stop_grace_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8082/health', timeout=3)\""]
+      <<: *py-health
     depends_on:
       postgres:
         condition: service_healthy
@@ -125,6 +184,15 @@ services:
       - PORT=8083
       - KAFKA_BROKER=kafka:29092
       - OPENTELEMETRY_COLLECTOR_URL=http://otel-collector:4317
+    stop_grace_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8083/health', timeout=3)\""]
+      <<: *py-health
     depends_on:
       kafka:
         condition: service_healthy
@@ -139,8 +207,15 @@ services:
     volumes:
       - ./telemetry/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
     ports:
-      - "4317:4317" # OTLP gRCP
+      - "4317:4317" # OTLP gRPC
       - "4318:4318" # OTLP HTTP
+    stop_grace_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    # No shell in the contrib image; container liveness is the healthcheck.
     depends_on:
       - prometheus
 
@@ -151,6 +226,17 @@ services:
       - ./telemetry/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
       - "9090:9090"
+    stop_grace_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/healthy >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
 
   # ==========================================
   # CHAOS INJECTOR (Failure Injector)
@@ -159,15 +245,30 @@ services:
     build:
       context: ./chaos-injector
     container_name: apoe-chaos-injector
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock # Allows control of docker resources
+    # No docker.sock mount: the injector only speaks SQL/Redis/Kafka/HTTP.
     environment:
       - TELEMETRY_PROMETHEUS=http://prometheus:9090
-      - POSTGRES_USER=apoe_user
-      - POSTGRES_PASSWORD=apoe_secure_pass
-      - REDIS_HOST=redis
+      - DB_CONN=postgres://apoe_user:apoe_secure_pass@postgres:5432/enterprise_db
+      - REDIS_CONN=redis://redis:6379/0
+      - KAFKA_BROKER=kafka:29092
     ports:
       - "9999:9999" # Rest endpoint to trigger chaos
+    stop_grace_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:9999/health', timeout=3)\""]
+      <<: *py-health
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
 
   # ==========================================
   # ACTIVE AGENT ORCHESTRATOR (APOE Brain)
@@ -186,6 +287,24 @@ services:
       - APOE_KAFKA_BOOTSTRAP=kafka:29092
       - APOE_CHAOS_INJECTOR_URL=http://chaos-injector:9999
       - APOE_OTEL_ENDPOINT=http://otel-collector:4317
+      # Governance + LLM config from the host environment — no secrets here.
+      - APOE_API_KEY=${APOE_API_KEY:-}
+      - APOE_LLM_PROVIDER=${APOE_LLM_PROVIDER:-anthropic}
+      - APOE_LLM_BASE_URL=${APOE_LLM_BASE_URL:-}
+      - APOE_LLM_MODEL=${APOE_LLM_MODEL:-}
+      - APOE_LLM_API_KEY=${APOE_LLM_API_KEY:-}
+      - APOE_DRY_RUN=${APOE_DRY_RUN:-false}
+    volumes:
+      - apoe_data:/data
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8085/health', timeout=3)\""]
+      <<: *py-health
     depends_on:
       postgres:
         condition: service_healthy
@@ -197,3 +316,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  apoe_data:

@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, cast
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
@@ -50,7 +51,7 @@ class TriggerRequest(BaseModel):
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_observability(settings)
     connectors = Connectors(settings)
@@ -128,7 +129,7 @@ class ApproveRequest(BaseModel):
 
 @app.get("/approvals")
 async def list_approvals() -> list[PendingApproval]:
-    return app.state.approvals.pending()
+    return cast(list[PendingApproval], app.state.approvals.pending())
 
 
 @app.post("/approvals/{approval_id}/approve", dependencies=[Depends(require_api_key)])

@@ -92,12 +92,13 @@ class KnowledgeStore:
             "created_at": session.created_at.isoformat(),
             "closed_at": session.updated_at.isoformat(),
         }
-        root = record["root_cause"] or "unknown"
+        root = (d.root_cause.value if d else None) or "unknown"
         title = f"{root} -> {session.state.value} ({session.trigger})"
-        searchable = " ".join(
-            filter(None, [root, session.state.value, record["rationale"] or "",
-                          *record["evidence"]])
-        )
+        parts: list[str] = [root, session.state.value]
+        if d and d.rationale:
+            parts.append(d.rationale)
+        parts.extend(str(e) for e in (d.evidence if d else []))
+        searchable = " ".join(parts)
         self.add(
             "incident",
             session.incident_id,

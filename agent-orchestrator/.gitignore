@@ -4,3 +4,7 @@
 .pytest_cache/
 .coverage
 .env
+apoe_audit.jsonl
+apoe_knowledge.db
+.mypy_cache/
+.ruff_cache/
