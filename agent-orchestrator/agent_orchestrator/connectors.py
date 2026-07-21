@@ -48,6 +48,17 @@ class PrometheusConnector:
         self._settings = settings
         self._client = httpx.AsyncClient(base_url=settings.prometheus_url, timeout=5.0)
 
+    async def range_query(
+        self, promql: str, start: str, end: str, step: str
+    ) -> list[dict[str, Any]]:
+        """Return the raw result list of a range PromQL query (read-only)."""
+        resp = await self._client.get(
+            "/api/v1/query_range",
+            params={"query": promql, "start": start, "end": end, "step": step},
+        )
+        resp.raise_for_status()
+        return resp.json().get("data", {}).get("result", [])
+
     async def instant_query(self, promql: str) -> float | None:
         """Return the scalar value of an instant PromQL query, or None if empty."""
         async for attempt in _retryer(self._settings, httpx.HTTPError):
@@ -106,6 +117,12 @@ class PostgresConnector:
         )
         return [dict(r) for r in rows]
 
+    async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+        """Run a read-only query authored by orchestrator code (never the LLM)."""
+        pool = await self._ensure_pool()
+        rows = await pool.fetch(sql, *params)
+        return [dict(r) for r in rows]
+
     async def terminate_backend(self, pid: int) -> bool:
         """Terminate a backend by pid. Idempotent: a gone pid returns False.
 
@@ -136,6 +153,29 @@ class RedisConnector:
                 await self._client.ping()
                 return (time.perf_counter() - start) * 1000.0
         return -1.0  # pragma: no cover
+
+    async def info(self) -> dict[str, Any]:
+        """Read-only ``INFO`` snapshot."""
+        return dict(await self._client.info())
+
+    async def slowlog(self, count: int = 25) -> list[Any]:
+        """Read-only ``SLOWLOG GET``."""
+        return list(await self._client.slowlog_get(count))
+
+    async def key_sample(self, count: int = 20) -> list[dict[str, Any]]:
+        """Sample up to ``count`` keys with their type and TTL (read-only)."""
+        sample: list[dict[str, Any]] = []
+        async for key in self._client.scan_iter(count=count):
+            sample.append(
+                {
+                    "key": key,
+                    "type": await self._client.type(key),
+                    "ttl": await self._client.ttl(key),
+                }
+            )
+            if len(sample) >= count:
+                break
+        return sample
 
     async def delete_key(self, key: str) -> int:
         """Delete a cache key. Idempotent: deleting a missing key returns 0."""
@@ -173,6 +213,25 @@ class KafkaConnector:
             return sum(
                 end_offsets[tp] - (committed[tp] or 0) for tp in tps
             )
+        finally:
+            await consumer.stop()
+
+    async def topic_offsets(self, topic: str) -> dict[str, Any]:
+        """Partition count + end offsets for a topic (read-only)."""
+        from aiokafka import AIOKafkaConsumer
+        from aiokafka.structs import TopicPartition
+
+        consumer = AIOKafkaConsumer(bootstrap_servers=self._settings.kafka_bootstrap)
+        await consumer.start()
+        try:
+            partitions = consumer.partitions_for_topic(topic) or set()
+            tps = [TopicPartition(topic, p) for p in partitions]
+            end_offsets = await consumer.end_offsets(tps) if tps else {}
+            return {
+                "topic": topic,
+                "partitions": len(partitions),
+                "end_offsets": {str(tp.partition): off for tp, off in end_offsets.items()},
+            }
         finally:
             await consumer.stop()
 

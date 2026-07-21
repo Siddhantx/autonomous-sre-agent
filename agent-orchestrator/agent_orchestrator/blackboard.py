@@ -91,6 +91,10 @@ class Blackboard:
         except KeyError as exc:
             raise UnknownIncident(incident_id) from exc
 
+    def recent_sessions(self, n: int = 5) -> list[IncidentSession]:
+        """The n most recently created sessions (dicts preserve insert order)."""
+        return list(self._sessions.values())[-n:]
+
     def transition(self, incident_id: str, to: IncidentState) -> IncidentSession:
         """Move an incident to ``to`` iff the edge is legal, else raise."""
         session = self.get(incident_id)
