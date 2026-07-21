@@ -131,10 +131,12 @@ class Orchestrator:
         incident_id = session.incident_id
 
         if not diagnosis.proposed_actions:
-            # Either healthy or a diagnosis with no safe automatic action.
+            # Healthy only if nothing faulted AND no root cause was named;
+            # a diagnosed cause with no safe automatic action must escalate.
             target = (
                 IncidentState.RESOLVED
-                if not any(f.is_fault for f in session.findings)
+                if diagnosis.root_cause is RootCause.UNKNOWN
+                and not any(f.is_fault for f in session.findings)
                 else IncidentState.ESCALATED
             )
             self.blackboard.transition(incident_id, target)

@@ -132,6 +132,14 @@ def health_endpoint():
 
 @app.post("/api/v1/orders", status_code=status.HTTP_201_CREATED)
 async def create_order(item_id: str, quantity: int, amount: float):
+    # Chaos hook: a bad config deploy (injected via redis) breaks this service.
+    try:
+        bad_config = redis_client.get("chaos:bad-config:order-service") if redis_client else None
+    except Exception:
+        bad_config = None
+    if bad_config:
+        logger.error(f"Configuration error: cannot reach database with deployed config: {bad_config}")
+        raise HTTPException(status_code=500, detail="Internal configuration error (database unreachable)")
     # Retrieve dependency details from inventory-service
     inventory_url = f"http://inventory-service:8082/api/v1/inventory/{item_id}"
     try:

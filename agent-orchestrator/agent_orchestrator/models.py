@@ -54,6 +54,12 @@ class RootCause(str, Enum):
     MEMORY_LEAK = "memory_leak"
     CACHE_UNAVAILABLE = "cache_unavailable"
     KAFKA_CONSUMER_LAG = "kafka_consumer_lag"
+    # Novel faults — no deterministic rule covers these; investigator territory.
+    CONNECTION_POOL_EXHAUSTION = "connection_pool_exhaustion"
+    BAD_CONFIG_DEPLOY = "bad_config_deploy"
+    SLOW_QUERY_REGRESSION = "slow_query_regression"
+    KAFKA_POISON_PILL = "kafka_poison_pill"
+    DISK_FILL = "disk_fill"
     UNKNOWN = "unknown"
 
 
