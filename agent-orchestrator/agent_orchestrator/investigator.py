@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -239,6 +240,18 @@ async def _code_search(args: dict[str, Any], ctx: ToolContext) -> Any:
     return matches or {"info": "no matches"}
 
 
+async def _log_search(args: dict[str, Any], ctx: ToolContext) -> Any:
+    """Search recent container logs. LogQL is assembled HERE, never by the LLM."""
+    service = re.sub(r"[^a-zA-Z0-9_-]", "", str(args.get("service", "")))
+    pattern = str(args.get("pattern", ""))
+    minutes = min(max(int(args.get("minutes", 15)), 1), 240)
+    selector = f'{{container=~".*{service}.*"}}' if service else '{container=~".+"}'
+    logql = selector
+    if pattern:
+        logql += f" |= {json.dumps(pattern)}"  # json escaping == LogQL string escaping
+    return await ctx.connectors.loki.search(logql, minutes, limit=50)
+
+
 async def _knowledge_search(args: dict[str, Any], ctx: ToolContext) -> Any:
     if ctx.knowledge is None:
         return {"error": "knowledge store not configured"}
@@ -291,6 +304,7 @@ TOOLS = {
     "prometheus_query": _prometheus_query,
     "prometheus_range": _prometheus_range,
     "code_search": _code_search,
+    "log_search": _log_search,
     "knowledge_search": _knowledge_search,
     "blackboard_context": _blackboard_context,
 }

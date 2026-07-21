@@ -219,6 +219,43 @@ services:
     depends_on:
       - prometheus
 
+  loki:
+    image: grafana/loki:2.9.8
+    container_name: apoe-loki
+    ports:
+      - "3100:3100"
+    stop_grace_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 384M
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3100/ready >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  promtail:
+    image: grafana/promtail:2.9.8
+    container_name: apoe-promtail
+    volumes:
+      - ./telemetry/promtail-config.yaml:/etc/promtail/config.yml:ro
+      # Read-only docker socket: promtail discovers containers and tails
+      # their logs. Log shipper only - it cannot start/stop anything.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: -config.file=/etc/promtail/config.yml
+    stop_grace_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+    depends_on:
+      loki:
+        condition: service_healthy
+
   prometheus:
     image: prom/prometheus:v2.46.0
     container_name: apoe-prometheus
@@ -286,6 +323,7 @@ services:
       - APOE_REDIS_URL=redis://redis:6379/0
       - APOE_KAFKA_BOOTSTRAP=kafka:29092
       - APOE_CHAOS_INJECTOR_URL=http://chaos-injector:9999
+      - APOE_LOKI_URL=http://loki:3100
       - APOE_OTEL_ENDPOINT=http://otel-collector:4317
       # Governance + LLM config from the host environment — no secrets here.
       - APOE_API_KEY=${APOE_API_KEY:-}

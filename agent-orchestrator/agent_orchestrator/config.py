@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
     kafka_bootstrap: str = "kafka:29092"
     chaos_injector_url: str = "http://chaos-injector:9999"
+    loki_url: str = "http://loki:3100"
 
     # --- OpenTelemetry ------------------------------------------------------
     otel_enabled: bool = True

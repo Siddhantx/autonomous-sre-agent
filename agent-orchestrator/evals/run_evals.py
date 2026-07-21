@@ -111,7 +111,11 @@ def fake_connectors(scenario: Scenario) -> SimpleNamespace:
     async def topic_offsets(t):
         return value("kafka.topic_offsets", {"topic": t, "partitions": 0})
 
+    async def loki_search(logql, minutes, limit=50):
+        return value("loki.search", [])
+
     return SimpleNamespace(
+        loki=SimpleNamespace(search=loki_search),
         postgres=SimpleNamespace(fetch=pg_fetch, blocking_backends=blocking_backends),
         prometheus=SimpleNamespace(instant_query=instant_query, range_query=range_query),
         redis=SimpleNamespace(info=redis_info, slowlog=slowlog, key_sample=key_sample),

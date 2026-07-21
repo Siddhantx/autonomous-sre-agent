@@ -236,6 +236,49 @@ class KafkaConnector:
             await consumer.stop()
 
 
+class LokiConnector:
+    """Read-only log search against a Loki-compatible API."""
+
+    def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None):
+        self._settings = settings
+        self._client = client or httpx.AsyncClient(
+            base_url=settings.loki_url, timeout=10.0
+        )
+
+    async def search(
+        self, logql: str, minutes: int, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """Run a LogQL query over the last ``minutes``; newest lines first."""
+        import time as _time
+
+        end_ns = int(_time.time() * 1e9)
+        start_ns = end_ns - minutes * 60 * 1_000_000_000
+        resp = await self._client.get(
+            "/loki/api/v1/query_range",
+            params={
+                "query": logql,
+                "start": str(start_ns),
+                "end": str(end_ns),
+                "limit": str(limit),
+                "direction": "backward",
+            },
+        )
+        resp.raise_for_status()
+        streams = resp.json().get("data", {}).get("result", [])
+        lines: list[dict[str, Any]] = []
+        for stream in streams:
+            container = stream.get("stream", {}).get("container", "?")
+            for ts, line in stream.get("values", []):
+                lines.append(
+                    {"ts": ts, "container": container, "line": line[:300]}
+                )
+        lines.sort(key=lambda entry: str(entry["ts"]), reverse=True)
+        return lines[:limit]
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
+
+
 class ChaosConnector:
     """Client for the chaos-injector — used to drive the e2e incident sim."""
 
@@ -268,10 +311,12 @@ class Connectors:
         self.postgres = PostgresConnector(settings)
         self.redis = RedisConnector(settings)
         self.kafka = KafkaConnector(settings)
+        self.loki = LokiConnector(settings)
         self.chaos = ChaosConnector(settings)
 
     async def aclose(self) -> None:
         await self.prometheus.aclose()
         await self.postgres.aclose()
         await self.redis.aclose()
+        await self.loki.aclose()
         await self.chaos.aclose()
