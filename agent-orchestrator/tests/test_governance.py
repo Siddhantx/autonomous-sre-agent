@@ -11,7 +11,7 @@ from agent_orchestrator.approvals import AlreadyResolved, ApprovalQueue
 from agent_orchestrator.audit import audit_event
 from agent_orchestrator.blackboard import Blackboard
 from agent_orchestrator.config import Settings, get_settings
-from agent_orchestrator.models import ActionType, ProposedAction
+from agent_orchestrator.models import ActionType, IncidentSession, ProposedAction
 from agent_orchestrator.safety import (
     PolicyMatch,
     PolicyRule,
@@ -343,3 +343,54 @@ def test_approval_unknown_id_404(client):
     assert client.post(
         "/approvals/apr-nope/reject", json={"reason": "r"}, headers=AUTH
     ).status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Notifications
+# ---------------------------------------------------------------------------
+async def test_notify_slack_and_webhook(tmp_path):
+    """Notifications fire without raising on connection errors."""
+    from agent_orchestrator.models import IncidentState
+    from agent_orchestrator.notifications import notify, _slack_payload
+
+    session = IncidentSession(
+        incident_id="inc-n1", trigger="test", state=IncidentState.ESCALATED
+    )
+    payload = _slack_payload(session)
+    assert payload["blocks"][0]["text"]["text"].startswith(":rotating_light:")
+
+    # Bad URLs: notify never raises, just logs
+    await notify(session, slack_url="http://127.0.0.1:1/nope",
+                 webhook_url="http://127.0.0.1:1/nope")
+
+    # Empty URLs: no-op
+    await notify(session)
+
+
+def test_webhook_alert_endpoint(client):
+    resp = client.post(
+        "/webhooks/alert",
+        json={"source": "alertmanager", "summary": "high cpu", "severity": "critical"},
+        headers=AUTH,
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["trigger"].startswith("webhook:alertmanager:")
+    assert body["state"] in ("resolved", "escalated", "failed")
+
+
+def test_webhook_alert_requires_auth(client):
+    assert client.post(
+        "/webhooks/alert",
+        json={"source": "test", "summary": "x"},
+    ).status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Web UI
+# ---------------------------------------------------------------------------
+def test_ui_dashboard_serves_html(client):
+    resp = client.get("/ui")
+    assert resp.status_code == 200
+    assert "APOE Dashboard" in resp.text
+    assert "text/html" in resp.headers["content-type"]

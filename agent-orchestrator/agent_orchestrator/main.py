@@ -23,7 +23,7 @@ from typing import Any, cast
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .approvals import (
     AlreadyResolved,
@@ -39,6 +39,7 @@ from .knowledge import KnowledgeStore, ingest_all
 from .models import IncidentSession, RemediationResult
 from .observability import configure_observability, get_logger
 from .orchestrator import Orchestrator
+from .ui import router as ui_router
 
 log = get_logger("api")
 
@@ -53,6 +54,14 @@ def require_api_key(
 
 class TriggerRequest(BaseModel):
     trigger: str = "manual-trigger"
+
+
+class WebhookAlert(BaseModel):
+    """Inbound alert from PagerDuty / Alertmanager / any webhook source."""
+    source: str = "unknown"
+    summary: str = ""
+    severity: str = "warning"
+    labels: dict[str, str] = Field(default_factory=dict)
 
 
 @asynccontextmanager
@@ -79,6 +88,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="APOE Active Agent Orchestrator", version="1.0", lifespan=lifespan)
+app.include_router(ui_router)
 FastAPIInstrumentor.instrument_app(app)
 
 
@@ -237,3 +247,15 @@ async def policy_suggestions() -> list[dict[str, Any]]:
     """Auto-allow candidates from repeated human approvals. Read-only —
     a human reviews the suggested YAML and merges it into policies.yaml."""
     return promotion_candidates(app.state.settings)
+
+
+# ---------------------------------------------------------------------------
+# Inbound alert webhook (PagerDuty / Alertmanager / generic)
+# ---------------------------------------------------------------------------
+@app.post("/webhooks/alert", dependencies=[Depends(require_api_key)])
+async def alert_webhook(alert: WebhookAlert) -> IncidentSession:
+    """Accept an external alert and run the full incident pipeline."""
+    trigger = f"webhook:{alert.source}:{alert.summary[:80]}"
+    orchestrator: Orchestrator = app.state.orchestrator
+    log.info("webhook_received", source=alert.source, severity=alert.severity)
+    return await orchestrator.handle_incident(trigger)

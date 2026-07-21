@@ -573,7 +573,7 @@ async def _loop(
     knowledge: KnowledgeStore | None = None,
 ) -> Diagnosis:
     ctx = ToolContext(connectors, session, blackboard, settings, knowledge)
-    findings = json.dumps(
+    findings_json = json.dumps(
         [
             {"agent": f.agent_name, "status": f.status.value, "summary": f.summary,
              "metrics": f.metrics, "degraded": f.degraded}
@@ -615,11 +615,17 @@ async def _loop(
                 f"{c['summary']} (by {c['actor']})"
                 for c in changes
             )
+    if settings.swarm_enabled:
+        from .swarm import swarm_investigate
+        return await swarm_investigate(
+            ctx, llm, findings_json, knowledge_block, settings,
+        )
+
     tools = active_tools(settings)
     messages: list[dict[str, str]] = [
         {"role": "system", "content": _system_prompt(list(tools))},
         {"role": "user",
-         "content": f"Incident findings:\n{findings}{knowledge_block}"},
+         "content": f"Incident findings:\n{findings_json}{knowledge_block}"},
     ]
     tokens_used = 0
     tracer = get_tracer()

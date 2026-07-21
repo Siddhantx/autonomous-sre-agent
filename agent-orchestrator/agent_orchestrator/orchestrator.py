@@ -25,6 +25,7 @@ from .connectors import Connectors
 from .investigator import LLMClient, investigate, make_llm_client
 from .knowledge import KnowledgeStore
 from .models import IncidentSession, IncidentState, RemediationStatus, RootCause
+from .notifications import notify
 from .observability import bind_incident, clear_context, get_logger, get_tracer
 from .reasoner import reason
 from .remediation import RemediationEngine
@@ -90,6 +91,19 @@ class Orchestrator:
                         self.knowledge.add_post_mortem(session)
                     except Exception as exc:
                         log.warning("post_mortem_failed", error=str(exc))
+                if session.state in (
+                    IncidentState.ESCALATED,
+                    IncidentState.RESOLVED,
+                    IncidentState.FAILED,
+                ):
+                    try:
+                        await notify(
+                            session,
+                            slack_url=self._settings.slack_webhook_url,
+                            webhook_url=self._settings.notify_webhook_url,
+                        )
+                    except Exception as exc:
+                        log.warning("notification_failed", error=str(exc))
                 log.info("incident_closed", final_state=session.state.value)
                 clear_context()
             return session
