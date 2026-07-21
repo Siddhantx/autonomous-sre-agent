@@ -321,7 +321,14 @@ async def test_all_tool_handlers_dispatch(tmp_path):
     async def loki_search(logql, minutes, limit=50):
         return [{"ts": "1", "container": "order-service", "line": "boom"}]
 
+    async def pod_states(ns=None):
+        return [{"name": "p", "phase": "Running", "restarts": 0, "waiting_reasons": []}]
+
+    async def k8s_events(ns=None):
+        return [{"type": "Normal", "reason": "Pulled"}]
+
     connectors = SimpleNamespace(
+        k8s=SimpleNamespace(pod_states=pod_states, events=k8s_events),
         postgres=SimpleNamespace(fetch=fetch, blocking_backends=blocking_backends),
         redis=SimpleNamespace(info=info, slowlog=slowlog, key_sample=key_sample),
         kafka=SimpleNamespace(
@@ -366,8 +373,12 @@ async def test_all_tool_handlers_dispatch(tmp_path):
 def test_provider_layer_selection_and_registration():
     from agent_orchestrator.investigator import PROVIDERS, active_tools, register_provider
 
-    all_tools = active_tools(settings(tool_providers="all"))
-    assert set(all_tools) == {n for p in PROVIDERS.values() for n in p}
+    # "all" with k8s configured = every registered tool; without = k8s hidden
+    every = {n for p in PROVIDERS.values() for n in p}
+    assert set(active_tools(settings(tool_providers="all", k8s_api_url="https://k"))) \
+        == every
+    assert set(active_tools(settings(tool_providers="all"))) \
+        == every - set(PROVIDERS["kubernetes"])
 
     subset = active_tools(settings(tool_providers="postgres, logs"))
     assert "pg_blocking" in subset and "log_search" in subset
@@ -434,6 +445,53 @@ async def test_log_search_builds_safe_logql():
     await _dispatch_tool("log_search", {}, ctx)
     assert seen["logql"] == '{container=~".+"}'
     assert seen["minutes"] == 15
+
+
+async def test_k8s_connector_and_tools():
+    from agent_orchestrator.connectors import K8sConnector
+    from agent_orchestrator.investigator import ToolContext, _dispatch_tool, active_tools
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/pods"):
+            return httpx.Response(200, json={"items": [
+                {"metadata": {"name": "payment-7d9f"},
+                 "status": {"phase": "Running", "containerStatuses": [
+                     {"restartCount": 7,
+                      "state": {"waiting": {"reason": "CrashLoopBackOff"}}}]}},
+            ]})
+        return httpx.Response(200, json={"items": [
+            {"type": "Warning", "reason": "BackOff",
+             "involvedObject": {"name": "payment-7d9f"},
+             "message": "Back-off restarting failed container", "count": 12,
+             "lastTimestamp": "2026-07-21T10:00:00Z"},
+            {"type": "Normal", "reason": "Pulled",
+             "involvedObject": {"name": "order-1"},
+             "message": "ok", "count": 1, "lastTimestamp": "2026-07-21T11:00:00Z"},
+        ]})
+
+    k8s = K8sConnector(
+        settings(k8s_api_url="https://kube.test"),
+        client=httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url="https://kube.test"
+        ),
+    )
+    pods = await k8s.pod_states()
+    assert pods == [{"name": "payment-7d9f", "phase": "Running", "restarts": 7,
+                     "waiting_reasons": ["CrashLoopBackOff"]}]
+    events = await k8s.events()
+    assert events[0]["type"] == "Warning"  # warnings sort first
+
+    # Tools degrade when unconfigured, and the provider hides itself
+    bb = Blackboard()
+    session = make_session(bb)
+    ctx = ToolContext(SimpleNamespace(k8s=None), session, bb, settings())
+    assert "not configured" in await _dispatch_tool("k8s_pod_states", {}, ctx)
+    assert "k8s_pod_states" not in active_tools(settings())  # no APOE_K8S_API_URL
+    assert "k8s_pod_states" in active_tools(settings(k8s_api_url="https://kube.test"))
+
+    ctx_live = ToolContext(SimpleNamespace(k8s=k8s), session, bb, settings())
+    assert "CrashLoopBackOff" in await _dispatch_tool("k8s_pod_states", {}, ctx_live)
+    assert "BackOff" in await _dispatch_tool("k8s_events", {}, ctx_live)
 
 
 async def test_loki_connector_query_and_parse():

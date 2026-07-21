@@ -253,6 +253,20 @@ async def _log_search(args: dict[str, Any], ctx: ToolContext) -> Any:
     return await ctx.connectors.loki.search(logql, minutes, limit=50)
 
 
+async def _k8s_pod_states(args: dict[str, Any], ctx: ToolContext) -> Any:
+    k8s = getattr(ctx.connectors, "k8s", None)
+    if k8s is None:
+        return {"error": "kubernetes not configured"}
+    return await k8s.pod_states(str(args.get("namespace", "")) or None)
+
+
+async def _k8s_events(args: dict[str, Any], ctx: ToolContext) -> Any:
+    k8s = getattr(ctx.connectors, "k8s", None)
+    if k8s is None:
+        return {"error": "kubernetes not configured"}
+    return await k8s.events(str(args.get("namespace", "")) or None)
+
+
 async def _recent_changes(args: dict[str, Any], ctx: ToolContext) -> Any:
     if ctx.knowledge is None:
         return {"error": "knowledge store not configured"}
@@ -326,6 +340,10 @@ PROVIDERS: dict[str, dict[str, ToolHandler]] = {
         "prometheus_range": _prometheus_range,
     },
     "logs": {"log_search": _log_search},
+    "kubernetes": {
+        "k8s_pod_states": _k8s_pod_states,
+        "k8s_events": _k8s_events,
+    },
     "code": {"code_search": _code_search},
     "knowledge": {
         "recent_changes": _recent_changes,
@@ -346,6 +364,8 @@ def active_tools(settings: Settings) -> dict[str, ToolHandler]:
     names = list(PROVIDERS) if wanted == ["all"] else [
         p for p in wanted if p in PROVIDERS
     ]
+    if not settings.k8s_api_url and "kubernetes" in names:
+        names.remove("kubernetes")  # unconfigured backend: don't offer its tools
     merged: dict[str, ToolHandler] = {}
     for name in names:
         merged.update(PROVIDERS[name])
