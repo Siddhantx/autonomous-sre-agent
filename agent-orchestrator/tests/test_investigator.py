@@ -318,6 +318,9 @@ async def test_all_tool_handlers_dispatch(tmp_path):
     async def range_query(q, s, e, st):
         return [{"values": [[1, "0.5"]]}]
 
+    async def loki_search(logql, minutes, limit=50):
+        return [{"ts": "1", "container": "order-service", "line": "boom"}]
+
     connectors = SimpleNamespace(
         postgres=SimpleNamespace(fetch=fetch, blocking_backends=blocking_backends),
         redis=SimpleNamespace(info=info, slowlog=slowlog, key_sample=key_sample),
@@ -327,6 +330,7 @@ async def test_all_tool_handlers_dispatch(tmp_path):
         prometheus=SimpleNamespace(
             instant_query=instant_query, range_query=range_query
         ),
+        loki=SimpleNamespace(search=loki_search),
     )
     from agent_orchestrator.knowledge import KnowledgeStore
 
@@ -342,6 +346,7 @@ async def test_all_tool_handlers_dispatch(tmp_path):
         "pg_explain": {"query": "SELECT 1"},
         "code_search": {"pattern": "max_connections"},
         "knowledge_search": {"query": "blockers"},
+        "log_search": {"service": "order-service", "pattern": "boom"},
         "prometheus_query": {"query": "up"},
         "prometheus_range": {"query": "up", "start": "0", "end": "1", "step": "60s"},
     }
@@ -356,6 +361,60 @@ async def test_all_tool_handlers_dispatch(tmp_path):
     assert "no matches" in await _dispatch_tool(
         "code_search", {"pattern": "zzz_not_present"}, ctx
     )
+
+
+async def test_log_search_builds_safe_logql():
+    from agent_orchestrator.investigator import ToolContext, _dispatch_tool
+
+    seen = {}
+
+    async def loki_search(logql, minutes, limit=50):
+        seen["logql"] = logql
+        seen["minutes"] = minutes
+        return []
+
+    bb = Blackboard()
+    ctx = ToolContext(
+        SimpleNamespace(loki=SimpleNamespace(search=loki_search)),
+        make_session(bb), bb, settings(),
+    )
+    # Service name is sanitized; pattern is escaped as a string literal
+    await _dispatch_tool(
+        "log_search",
+        {"service": 'order"}; drop', "pattern": 'a"b\\c', "minutes": 9999},
+        ctx,
+    )
+    assert seen["logql"] == '{container=~".*orderdrop.*"} |= "a\\"b\\\\c"'
+    assert seen["minutes"] == 240  # clamped
+
+    await _dispatch_tool("log_search", {}, ctx)
+    assert seen["logql"] == '{container=~".+"}'
+    assert seen["minutes"] == 15
+
+
+async def test_loki_connector_query_and_parse():
+    from agent_orchestrator.connectors import LokiConnector
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/loki/api/v1/query_range"
+        assert request.url.params["direction"] == "backward"
+        return httpx.Response(
+            200,
+            json={"data": {"result": [
+                {"stream": {"container": "order-service"},
+                 "values": [["100", "older line"], ["200", "newer line"]]},
+            ]}},
+        )
+
+    connector = LokiConnector(
+        settings(),
+        client=httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url="http://loki:3100"
+        ),
+    )
+    lines = await connector.search('{container=~".+"}', minutes=15)
+    assert [entry["line"] for entry in lines] == ["newer line", "older line"]
+    assert lines[0]["container"] == "order-service"
 
 
 # ---------------------------------------------------------------------------

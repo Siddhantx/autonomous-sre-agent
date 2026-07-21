@@ -103,17 +103,24 @@ SCENARIOS: list[Scenario] = [
             "redis.key_sample": [
                 {"key": "chaos:bad-config:order-service", "type": "string", "ttl": -1}
             ],
+            "loki.search": [
+                {"ts": "1789000000000000000", "container": "order-service",
+                 "line": "Configuration error: cannot reach database with "
+                         "deployed config: DB_CONN=postgres://wrong_user:***@nowhere:5432"},
+            ],
         },
         fake_script=[
-            _tools({"tool": "code_search", "args": {"pattern": "DB_CONN"}},
+            _tools({"tool": "log_search",
+                    "args": {"service": "order-service", "pattern": "error"}},
                    {"tool": "redis_key_sample", "args": {}}),
             _diagnose(
                 "bad_config_deploy", 0.8,
-                "order-service returns 500s while every backing store is "
-                "healthy; a config override with an unreachable database DSN "
-                "is present. This is a bad deploy, not an infra fault — "
-                "rolling back config requires a human change-management step.",
-                ["[code_search] order-service reads DB_CONN at startup",
+                "order-service logs a configuration error naming an "
+                "unreachable database DSN while every backing store is "
+                "healthy; a config override with a wrong DSN is present. "
+                "This is a bad deploy, not an infra fault — rolling back "
+                "config requires a human change-management step.",
+                ["[log_search] order-service: 'cannot reach database with deployed config'",
                  "[redis_key_sample] config override key present with wrong DSN"],
             ),
         ],
@@ -167,18 +174,27 @@ SCENARIOS: list[Scenario] = [
             "kafka.total_consumer_lag": 5200,
             "kafka.topic_offsets": {"topic": "order-events", "partitions": 3,
                                     "end_offsets": {"0": 9120, "1": 2011, "2": 2018}},
+            "loki.search": [
+                {"ts": "1789000000000000000", "container": "payment-service",
+                 "line": "json.decoder.JSONDecodeError: Expecting value: line 1 "
+                         "column 1 (char 0) — message at order-events[0] offset 9119"},
+            ] * 5,
         },
         fake_script=[
             _tools({"tool": "kafka_consumer_lag", "args": {}},
-                   {"tool": "kafka_topic_desc", "args": {"topic": "order-events"}}),
+                   {"tool": "kafka_topic_desc", "args": {"topic": "order-events"}},
+                   {"tool": "log_search",
+                    "args": {"service": "payment-service", "pattern": "Error"}}),
             _diagnose(
                 "kafka_poison_pill", 0.8,
-                "Lag is pinned on a single partition while the others drain — "
-                "the consumer crashes repeatedly on one malformed message "
-                "rather than falling behind on throughput. Skipping a message "
-                "loses a payment; quarantining it is a human decision.",
+                "Lag is pinned on a single partition and the consumer logs "
+                "the same JSONDecodeError at the same offset repeatedly — it "
+                "crashes on one malformed message rather than falling behind "
+                "on throughput. Skipping a message loses a payment; "
+                "quarantining it is a human decision.",
                 ["[kafka_consumer_lag] payment-processors lag 5200 and climbing",
-                 "[kafka_topic_desc] partition 0 offset stuck at 9120 while 1,2 drain"],
+                 "[kafka_topic_desc] partition 0 offset stuck at 9120 while 1,2 drain",
+                 "[log_search] payment-service: repeated JSONDecodeError at offset 9119"],
             ),
         ],
     ),
