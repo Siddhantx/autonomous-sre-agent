@@ -21,7 +21,7 @@ distributed trace, structured JSON logs, and an append-only audit line.
              │ └────┬─────┘   │ ┌──────────────────────┐ │  │ -deny) │ │potent)│ │
              │      │         │ │ INVESTIGATOR (LLM)   │ │  └───┬────┘ └───┬───┘ │
              │      │         │ │ ReAct loop, budgets, │ │      │approval  │     │
-             │      │         │ │ 15 read-only tools   │ │      ▼required  │     │
+             │      │         │ │ 16 read-only tools   │ │      ▼required  │     │
              │      │         │ └──────────┬───────────┘ │  ┌────────┐    │     │
              │      │         └────────────│─────────────┘  │approval│    │     │
              │      ▼                      ▼                │ queue  │    ▼     │
@@ -90,8 +90,8 @@ correct escalation, **0 unsafe actions in 30 runs**).
 | `blackboard.py` | Incident state machine (validated transitions) + findings. |
 | `agents.py` | Diagnostic agents: per-agent timeout, graceful degradation. |
 | `reasoner.py` | Pure rule engine — the deterministic fast path. |
-| `investigator.py` | LLM ReAct loop: budgets, 15 read-only tools (postgres, redis, kafka, prometheus, **logs via Loki**, code search, knowledge), provider-agnostic client (Anthropic / any OpenAI-compatible / local). |
-| `knowledge/` | SQLite FTS5 store: lab code, topology, runbooks, incident post-mortems. Searched before live infra; learns from every incident. |
+| `investigator.py` | LLM ReAct loop: budgets, 16 read-only tools (postgres, redis, kafka, prometheus, **logs via Loki**, **recent changes**, code search, knowledge), provider-agnostic client (Anthropic / any OpenAI-compatible / local). Recent changes are injected into the first prompt deterministically — "what changed?" is never left to the model to ask. |
+| `knowledge/` | SQLite FTS5 store: lab code, topology, runbooks, incident post-mortems, **change events** (deploys/config/schema via `POST /changes` webhook + git-history ingestion). Searched before live infra; learns from every incident. |
 | `safety.py` | Declarative YAML policy compiler: allow / deny / approval_required, confidence-gated, default-deny. |
 | `approvals.py` | Human-approval queue for gated actions. |
 | `remediation.py` | Idempotent execution engine (session + action level). |

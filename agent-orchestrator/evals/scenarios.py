@@ -51,6 +51,9 @@ class Scenario:
     tool_data: dict[str, Any]           # connector method name -> return value
     fake_script: list[str]              # LLM replies, in order
     description: str = ""
+    # Change events seeded into the knowledge store before the run
+    # (service, change_kind, summary, actor).
+    changes: list[tuple[str, str, str, str]] = field(default_factory=list)
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -93,6 +96,12 @@ SCENARIOS: list[Scenario] = [
         ground_truth=RootCause.BAD_CONFIG_DEPLOY,
         expect_escalation=True,
         description="Wrong env var deployed to order-service; every order 500s.",
+        changes=[
+            ("order-service", "deploy",
+             "release 2.14.1: rotated DB credentials + env var cleanup", "cd-pipeline"),
+            ("inventory-service", "deploy", "release 1.9.0: no config changes",
+             "cd-pipeline"),
+        ],
         findings=[
             _finding("db-lock-agent", "postgres", SubsystemStatus.HEALTHY,
                      "no blocking backends detected"),
@@ -114,13 +123,14 @@ SCENARIOS: list[Scenario] = [
                     "args": {"service": "order-service", "pattern": "error"}},
                    {"tool": "redis_key_sample", "args": {}}),
             _diagnose(
-                "bad_config_deploy", 0.8,
-                "order-service logs a configuration error naming an "
-                "unreachable database DSN while every backing store is "
-                "healthy; a config override with a wrong DSN is present. "
-                "This is a bad deploy, not an infra fault — rolling back "
-                "config requires a human change-management step.",
-                ["[log_search] order-service: 'cannot reach database with deployed config'",
+                "bad_config_deploy", 0.85,
+                "order-service began 500ing right after release 2.14.1, which "
+                "touched DB credentials; its logs name an unreachable database "
+                "DSN while every backing store is healthy. This is a bad "
+                "deploy, not an infra fault — rolling back config requires a "
+                "human change-management step.",
+                ["[recent_changes] order-service deploy 2.14.1 rotated DB credentials",
+                 "[log_search] order-service: 'cannot reach database with deployed config'",
                  "[redis_key_sample] config override key present with wrong DSN"],
             ),
         ],
@@ -131,6 +141,11 @@ SCENARIOS: list[Scenario] = [
         ground_truth=RootCause.SLOW_QUERY_REGRESSION,
         expect_escalation=True,
         description="Index dropped on the hot orders table; latency regression.",
+        changes=[
+            ("postgres", "schema",
+             "migration 0042: consolidated order indexes (dropped idx_orders_status)",
+             "dba-team"),
+        ],
         findings=[
             _finding("db-lock-agent", "postgres", SubsystemStatus.HEALTHY,
                      "no blocking backends detected"),
@@ -148,12 +163,14 @@ SCENARIOS: list[Scenario] = [
             _tools({"tool": "pg_explain",
                     "args": {"query": "SELECT * FROM orders WHERE status = 'pending'"}}),
             _diagnose(
-                "slow_query_regression", 0.8,
-                "The orders table shows a runaway seq_scan count with almost "
-                "no index scans, and EXPLAIN confirms a sequential scan on the "
-                "status filter — the supporting index is gone. Recreating an "
-                "index is DDL and not whitelisted; a human must apply it.",
-                ["[pg_table_stats] orders: seq_scan=48211 vs idx_scan=12",
+                "slow_query_regression", 0.85,
+                "Latency regressed right after schema migration 0042, which "
+                "dropped idx_orders_status; the orders table now shows a "
+                "runaway seq_scan count and EXPLAIN confirms a sequential "
+                "scan on the status filter. Recreating an index is DDL and "
+                "not whitelisted; a human must apply it.",
+                ["[recent_changes] migration 0042 dropped idx_orders_status",
+                 "[pg_table_stats] orders: seq_scan=48211 vs idx_scan=12",
                  "[pg_explain] Seq Scan on orders (status filter, no index)"],
             ),
         ],

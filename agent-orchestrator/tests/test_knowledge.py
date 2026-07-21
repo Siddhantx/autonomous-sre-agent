@@ -11,6 +11,7 @@ from agent_orchestrator.config import Settings
 from agent_orchestrator.knowledge import (
     KnowledgeStore,
     ingest_all,
+    ingest_git_history,
     ingest_lab_sources,
     ingest_runbooks,
 )
@@ -107,7 +108,79 @@ def test_ingest_all_uses_settings(tmp_path):
     settings = Settings(lab_source_path=tmp_path / "lab", runbooks_path=RUNBOOKS_DIR)
     store = KnowledgeStore()
     counts = ingest_all(store, settings)
-    assert counts == {"lab_documents": 1, "runbooks": 5}
+    assert counts["lab_documents"] == 1
+    assert counts["runbooks"] == 5
+    assert counts["git_commits"] == 0  # tmp dir is not a git repo
+
+
+# ---------------------------------------------------------------------------
+# Change events ("what changed?")
+# ---------------------------------------------------------------------------
+def test_record_and_list_changes_newest_first():
+    store = KnowledgeStore()
+    store.record_change("order-service", "deploy", "release 1.0", actor="cd")
+    store.record_change("postgres", "schema", "migration 0042", actor="dba")
+    changes = store.recent_changes(10)
+    assert [c["service"] for c in changes] == ["postgres", "order-service"]
+    assert changes[0]["change_kind"] == "schema"
+    assert changes[0]["actor"] == "dba"
+    # Service filter
+    assert [c["service"] for c in store.recent_changes(10, service="order-service")] \
+        == ["order-service"]
+    # Changes are full-text searchable too
+    assert store.search("migration 0042", kind="change")
+
+
+def test_ingest_git_history_real_repo_and_missing_dir(tmp_path):
+    store = KnowledgeStore()
+    repo_root = Path(__file__).resolve().parents[1]
+    n = ingest_git_history(store, repo_root, n=5)
+    if n:  # git + repo available (dev machine, CI)
+        changes = store.recent_changes(5)
+        assert changes and changes[0]["change_kind"] == "commit"
+        assert changes[0]["service"] == "codebase"
+    assert ingest_git_history(store, tmp_path / "not-a-repo") == 0
+
+
+async def test_recent_changes_tool_and_prompt_injection():
+    from agent_orchestrator.investigator import (
+        LLMResponse,
+        ToolContext,
+        _dispatch_tool,
+        investigate,
+    )
+    from types import SimpleNamespace
+
+    store = KnowledgeStore()
+    store.record_change("order-service", "deploy", "release 2.14.1 broke config",
+                        actor="cd-pipeline")
+
+    bb = Blackboard()
+    session = bb.create("inc-chg", "test")
+    ctx = ToolContext(SimpleNamespace(), session, bb, Settings(), store)
+    payload = await _dispatch_tool("recent_changes", {"service": "order-service"}, ctx)
+    assert "release 2.14.1" in payload
+    ctx_none = ToolContext(SimpleNamespace(), session, bb, Settings(), None)
+    assert "not configured" in await _dispatch_tool("recent_changes", {}, ctx_none)
+
+    class OneShot:
+        def __init__(self):
+            self.calls = []
+
+        async def complete(self, messages, max_tokens):
+            self.calls.append(messages)
+            return LLMResponse(
+                text='{"action": "diagnose", "root_cause": "bad_config_deploy", '
+                     '"confidence": 0.8, "rationale": "deploy"}',
+                tokens=10,
+            )
+
+    llm = OneShot()
+    await investigate(session, bb, SimpleNamespace(),
+                      Settings(investigator_timeout_s=5.0), llm, store)
+    first_msg = llm.calls[0][1]["content"]
+    assert "Recent changes (newest first):" in first_msg
+    assert "release 2.14.1" in first_msg
 
 
 # ---------------------------------------------------------------------------

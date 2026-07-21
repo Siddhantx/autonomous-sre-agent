@@ -53,7 +53,7 @@ class Orchestrator:
         self.remediation = RemediationEngine(settings, connectors)
         # Investigator is disabled unless a model is configured or injected.
         self._llm = llm or (make_llm_client(settings) if settings.llm_model else None)
-        self._knowledge = knowledge
+        self.knowledge = knowledge
         self._approvals = approvals
 
     async def handle_incident(self, trigger: str) -> IncidentSession:
@@ -85,9 +85,9 @@ class Orchestrator:
                     self.blackboard.transition(incident_id, IncidentState.FAILED)
             finally:
                 # Learning loop: every terminal outcome becomes a post-mortem.
-                if self._knowledge is not None:
+                if self.knowledge is not None:
                     try:
-                        self._knowledge.add_post_mortem(session)
+                        self.knowledge.add_post_mortem(session)
                     except Exception as exc:
                         log.warning("post_mortem_failed", error=str(exc))
                 log.info("incident_closed", final_state=session.state.value)
@@ -111,7 +111,7 @@ class Orchestrator:
             )
             llm_diagnosis = await investigate(
                 session, self.blackboard, self._connectors, self._settings,
-                self._llm, self._knowledge,
+                self._llm, self.knowledge,
             )
             # Keep the better of the two; investigate() never raises.
             if llm_diagnosis.confidence >= diagnosis.confidence:

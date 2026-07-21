@@ -116,6 +116,39 @@ async def simulate(scenario: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Change events ("what changed?") — CI/CD systems POST here on every deploy
+# ---------------------------------------------------------------------------
+class ChangeEvent(BaseModel):
+    service: str
+    change_kind: str = "deploy"   # deploy | config | schema | infra | commit
+    summary: str
+    actor: str = "unknown"
+
+
+@app.post("/changes", dependencies=[Depends(require_api_key)])
+async def record_change(event: ChangeEvent) -> dict[str, str]:
+    orchestrator: Orchestrator = app.state.orchestrator
+    knowledge = orchestrator.knowledge
+    if knowledge is None:
+        raise HTTPException(status_code=503, detail="knowledge store not configured")
+    change_id = knowledge.record_change(
+        event.service, event.change_kind, event.summary, actor=event.actor
+    )
+    log.info("change_recorded", change_id=change_id, service=event.service,
+             change_kind=event.change_kind)
+    return {"change_id": change_id}
+
+
+@app.get("/changes")
+async def list_changes(service: str | None = None) -> list[dict[str, Any]]:
+    orchestrator: Orchestrator = app.state.orchestrator
+    knowledge = orchestrator.knowledge
+    if knowledge is None:
+        return []
+    return knowledge.recent_changes(20, service=service)
+
+
+# ---------------------------------------------------------------------------
 # Human-approval workflow
 # ---------------------------------------------------------------------------
 class RejectRequest(BaseModel):

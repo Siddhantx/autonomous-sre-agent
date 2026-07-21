@@ -6,6 +6,7 @@ refreshes rather than duplicates.
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 from ..config import Settings
@@ -54,8 +55,28 @@ def ingest_runbooks(store: KnowledgeStore, runbooks_path: Path) -> int:
     return count
 
 
+def ingest_git_history(store: KnowledgeStore, repo_path: Path, n: int = 20) -> int:
+    """Record recent git commits as change events. Silently 0 without git/repo."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo_path), "log", f"-{n}",
+             "--pretty=format:%h|%aI|%an|%s"],
+            capture_output=True, text=True, timeout=15, check=True,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return 0
+    lines = [line for line in out.splitlines() if line.count("|") >= 3]
+    # Oldest first so rowid order == time order.
+    for line in reversed(lines):
+        sha, at, author, subject = line.split("|", 3)
+        store.record_change("codebase", "commit", f"{sha} {subject}",
+                            actor=author, at=at)
+    return len(lines)
+
+
 def ingest_all(store: KnowledgeStore, settings: Settings) -> dict[str, int]:
     return {
         "lab_documents": ingest_lab_sources(store, settings.lab_source_path),
         "runbooks": ingest_runbooks(store, settings.runbooks_path),
+        "git_commits": ingest_git_history(store, settings.lab_source_path),
     }
