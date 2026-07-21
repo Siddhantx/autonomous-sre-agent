@@ -59,6 +59,20 @@ class Settings(BaseSettings):
     # When true, remediation is planned and evaluated but never executed.
     dry_run: bool = False
 
+    # --- LLM investigator ---------------------------------------------------
+    # provider: "anthropic" or "openai" (any OpenAI-compatible endpoint:
+    # OpenAI, Ollama, vLLM). Investigator is disabled when llm_model is empty.
+    llm_provider: str = "anthropic"
+    llm_base_url: str = ""  # required for openai provider, e.g. http://localhost:11434/v1
+    llm_model: str = ""
+    llm_api_key: str = ""
+    investigator_threshold: float = 0.7
+    investigator_max_steps: int = 8
+    investigator_max_tokens: int = 4000
+    investigator_timeout_s: float = 30.0
+    # Root of the lab service sources for the code_search tool.
+    lab_source_path: Path = Path(__file__).resolve().parents[2] / "enterprise-lab"
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

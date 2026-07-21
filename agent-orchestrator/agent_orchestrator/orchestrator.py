@@ -20,7 +20,8 @@ from .agents import DiagnosticAgent, default_agents, run_all
 from .blackboard import Blackboard
 from .config import Settings
 from .connectors import Connectors
-from .models import IncidentSession, IncidentState, RemediationStatus
+from .investigator import LLMClient, investigate, make_llm_client
+from .models import IncidentSession, IncidentState, RemediationStatus, RootCause
 from .observability import bind_incident, clear_context, get_logger, get_tracer
 from .reasoner import reason
 from .remediation import RemediationEngine
@@ -37,6 +38,7 @@ class Orchestrator:
         blackboard: Blackboard | None = None,
         agents: list[DiagnosticAgent] | None = None,
         policy: CompiledPolicy | None = None,
+        llm: LLMClient | None = None,
     ) -> None:
         self._settings = settings
         self._connectors = connectors
@@ -44,6 +46,8 @@ class Orchestrator:
         self._agents = agents if agents is not None else default_agents()
         self._policy = policy or load_policy(settings.safety_policy_path)
         self._remediation = RemediationEngine(settings, connectors)
+        # Investigator is disabled unless a model is configured or injected.
+        self._llm = llm or (make_llm_client(settings) if settings.llm_model else None)
 
     async def handle_incident(self, trigger: str) -> IncidentSession:
         """Run the full pipeline for a new incident and return the record."""
@@ -83,6 +87,21 @@ class Orchestrator:
         for finding in findings:
             await self.blackboard.add_finding(session.incident_id, finding)
         diagnosis = reason(findings)
+        if self._llm is not None and (
+            diagnosis.root_cause is RootCause.UNKNOWN
+            or diagnosis.confidence < self._settings.investigator_threshold
+        ):
+            log.info(
+                "investigator_activated",
+                rule_root_cause=diagnosis.root_cause.value,
+                rule_confidence=diagnosis.confidence,
+            )
+            llm_diagnosis = await investigate(
+                session, self.blackboard, self._connectors, self._settings, self._llm
+            )
+            # Keep the better of the two; investigate() never raises.
+            if llm_diagnosis.confidence >= diagnosis.confidence:
+                diagnosis = llm_diagnosis
         self.blackboard.set_diagnosis(session.incident_id, diagnosis)
         self.blackboard.transition(session.incident_id, IncidentState.DIAGNOSED)
         log.info(
