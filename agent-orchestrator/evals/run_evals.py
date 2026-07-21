@@ -156,6 +156,8 @@ async def run_fake(scenario: Scenario, use_investigator: bool,
     """Synthetic connectors; LLM is scripted unless a real client is given."""
     knowledge = KnowledgeStore()
     ingest_runbooks(knowledge, RUNBOOKS)
+    for service, change_kind, summary, actor in scenario.changes:
+        knowledge.record_change(service, change_kind, summary, actor=actor)
     llm = None
     if use_investigator:
         llm = real_llm or ScriptedLLM(scenario.fake_script)

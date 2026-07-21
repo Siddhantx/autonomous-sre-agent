@@ -10,7 +10,7 @@ The LLM is treated as an **untrusted advisor** inside a trusted pipeline.
 | The LLM can | The LLM cannot |
 |---|---|
 | Read findings the diagnostic agents already collected | Execute anything directly — it has no shell, no SQL, no network |
-| Call 15 read-only tools (fixed queries authored in code — incl. log search whose LogQL is assembled in code; see below) | Author SQL — tools run queries written in `investigator.py`; the one exception, `pg_explain`, accepts only a single `SELECT`/`WITH` statement and wraps it in `EXPLAIN` (never `ANALYZE`) |
+| Call 16 read-only tools (fixed queries authored in code — incl. log search whose LogQL is assembled in code; see below) | Author SQL — tools run queries written in `investigator.py`; the one exception, `pg_explain`, accepts only a single `SELECT`/`WITH` statement and wraps it in `EXPLAIN` (never `ANALYZE`) |
 | Propose actions **by name** from the `ActionType` whitelist enum | Invent new action types — proposals outside the enum are dropped and recorded |
 | Recommend confidence and rationale | Bypass the safety policy — every proposed action is evaluated against the default-deny YAML policy; `approval_required` actions wait for a human via the `/approvals` API |
 | Search the local knowledge store | Write to the knowledge store, blackboard, or any subsystem |

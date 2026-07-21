@@ -252,6 +252,14 @@ async def _log_search(args: dict[str, Any], ctx: ToolContext) -> Any:
     return await ctx.connectors.loki.search(logql, minutes, limit=50)
 
 
+async def _recent_changes(args: dict[str, Any], ctx: ToolContext) -> Any:
+    if ctx.knowledge is None:
+        return {"error": "knowledge store not configured"}
+    service = str(args.get("service", "")) or None
+    n = min(max(int(args.get("limit", 10)), 1), 20)
+    return ctx.knowledge.recent_changes(n, service=service)
+
+
 async def _knowledge_search(args: dict[str, Any], ctx: ToolContext) -> Any:
     if ctx.knowledge is None:
         return {"error": "knowledge store not configured"}
@@ -305,6 +313,7 @@ TOOLS = {
     "prometheus_range": _prometheus_range,
     "code_search": _code_search,
     "log_search": _log_search,
+    "recent_changes": _recent_changes,
     "knowledge_search": _knowledge_search,
     "blackboard_context": _blackboard_context,
 }
@@ -357,6 +366,8 @@ Available tools: %s
                        "target": "...", "params": {}, "rationale": "..."}]}
 
 Rules:
+- Most incidents follow a change. Weigh the recent changes in your context
+  (and the recent_changes tool) BEFORE hunting for spontaneous infra faults.
 - Consult knowledge_search (runbooks, topology, past incidents) BEFORE
   querying live infrastructure.
 - Every evidence entry MUST cite the tool that produced it in [brackets].
@@ -488,6 +499,14 @@ async def _loop(
         if hits:
             knowledge_block = "\n\nKnowledge base (pre-searched):\n" + "\n".join(
                 f"- [{h.kind}] {h.title} ({h.ref}): {h.snippet}" for h in hits
+            )
+        # "What changed?" — always injected, never left to the model to ask.
+        changes = knowledge.recent_changes(5)
+        if changes:
+            knowledge_block += "\n\nRecent changes (newest first):\n" + "\n".join(
+                f"- {c['at']} [{c['change_kind']}] {c['service']}: "
+                f"{c['summary']} (by {c['actor']})"
+                for c in changes
             )
     messages: list[dict[str, str]] = [
         {"role": "system", "content": _system_prompt()},

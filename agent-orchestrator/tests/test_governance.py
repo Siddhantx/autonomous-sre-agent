@@ -271,6 +271,26 @@ def test_approval_flow_reject_records_reason(client, tmp_path):
     assert audit[-1]["rationale"] == "not during trading hours"
 
 
+def test_change_webhook_records_and_lists(client):
+    resp = client.post(
+        "/changes",
+        json={"service": "order-service", "change_kind": "deploy",
+              "summary": "release 3.0", "actor": "cd"},
+        headers=AUTH,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["change_id"].startswith("chg-")
+
+    listed = client.get("/changes").json()
+    assert listed[0]["summary"] == "release 3.0"
+    assert client.get("/changes", params={"service": "nope"}).json() == []
+
+    # Auth required to record
+    assert client.post(
+        "/changes", json={"service": "x", "summary": "y"}
+    ).status_code == 401
+
+
 def test_approval_unknown_id_404(client):
     assert client.post("/approvals/apr-nope/approve", headers=AUTH).status_code == 404
     assert client.post(
