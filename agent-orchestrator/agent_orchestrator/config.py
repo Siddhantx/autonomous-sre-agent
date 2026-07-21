@@ -71,6 +71,8 @@ class Settings(BaseSettings):
     investigator_max_steps: int = 8
     investigator_max_tokens: int = 4000
     investigator_timeout_s: float = 30.0
+    # Comma-separated tool providers ("all" = every registered provider).
+    tool_providers: str = "all"
     # Root of the lab service sources for the code_search tool.
     lab_source_path: Path = Path(__file__).resolve().parents[2] / "enterprise-lab"
 

@@ -21,6 +21,7 @@ import asyncio
 import json
 import re
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -299,34 +300,78 @@ class ToolContext:
     knowledge: KnowledgeStore | None = None
 
 
-TOOLS = {
-    "pg_stat_activity": _pg_stat_activity,
-    "pg_blocking": _pg_blocking,
-    "pg_table_stats": _pg_table_stats,
-    "pg_explain": _pg_explain,
-    "redis_info": _redis_info,
-    "redis_slowlog": _redis_slowlog,
-    "redis_key_sample": _redis_key_sample,
-    "kafka_consumer_lag": _kafka_consumer_lag,
-    "kafka_topic_desc": _kafka_topic_desc,
-    "prometheus_query": _prometheus_query,
-    "prometheus_range": _prometheus_range,
-    "code_search": _code_search,
-    "log_search": _log_search,
-    "recent_changes": _recent_changes,
-    "knowledge_search": _knowledge_search,
-    "blackboard_context": _blackboard_context,
+ToolHandler = Callable[[dict[str, Any], "ToolContext"], Awaitable[Any]]
+
+# Tool-provider plugin layer: each provider groups the read-only tools for one
+# backend interface (SQL via read-only DSN, Prometheus API, Loki API, ...).
+# App-specific knowledge comes from ingestion, never from code changes here.
+PROVIDERS: dict[str, dict[str, ToolHandler]] = {
+    "postgres": {
+        "pg_stat_activity": _pg_stat_activity,
+        "pg_blocking": _pg_blocking,
+        "pg_table_stats": _pg_table_stats,
+        "pg_explain": _pg_explain,
+    },
+    "redis": {
+        "redis_info": _redis_info,
+        "redis_slowlog": _redis_slowlog,
+        "redis_key_sample": _redis_key_sample,
+    },
+    "kafka": {
+        "kafka_consumer_lag": _kafka_consumer_lag,
+        "kafka_topic_desc": _kafka_topic_desc,
+    },
+    "prometheus": {
+        "prometheus_query": _prometheus_query,
+        "prometheus_range": _prometheus_range,
+    },
+    "logs": {"log_search": _log_search},
+    "code": {"code_search": _code_search},
+    "knowledge": {
+        "recent_changes": _recent_changes,
+        "knowledge_search": _knowledge_search,
+        "blackboard_context": _blackboard_context,
+    },
 }
 
 
-async def _dispatch_tool(name: str, args: dict[str, Any], ctx: ToolContext) -> str:
+def register_provider(name: str, tools: dict[str, ToolHandler]) -> None:
+    """Register a third-party tool provider (e.g. a cloud-specific backend)."""
+    PROVIDERS[name] = tools
+
+
+def active_tools(settings: Settings) -> dict[str, ToolHandler]:
+    """Merge the providers enabled by APOE_TOOL_PROVIDERS ('all' = every one)."""
+    wanted = [p.strip() for p in settings.tool_providers.split(",") if p.strip()]
+    names = list(PROVIDERS) if wanted == ["all"] else [
+        p for p in wanted if p in PROVIDERS
+    ]
+    merged: dict[str, ToolHandler] = {}
+    for name in names:
+        merged.update(PROVIDERS[name])
+    return merged
+
+
+# Backwards-compatible flat view of every registered tool.
+TOOLS: dict[str, ToolHandler] = {}
+for _provider_tools in PROVIDERS.values():
+    TOOLS.update(_provider_tools)
+
+
+async def _dispatch_tool(
+    name: str,
+    args: dict[str, Any],
+    ctx: ToolContext,
+    tools: dict[str, ToolHandler] | None = None,
+) -> str:
     """Run one tool under a span; failures degrade to an error payload."""
+    registry = tools if tools is not None else TOOLS
     tracer = get_tracer()
     with tracer.start_as_current_span(f"investigator.tool.{name}") as span:
         span.set_attribute("tool.name", name)
         started = time.perf_counter()
         try:
-            handler = TOOLS.get(name)
+            handler = registry.get(name)
             if handler is None:
                 result: Any = {"error": f"unknown tool '{name}'"}
             else:
@@ -376,9 +421,9 @@ Rules:
 - Prefer few, targeted tool calls; you have a hard step and token budget."""
 
 
-def _system_prompt() -> str:
+def _system_prompt(tool_names: list[str] | None = None) -> str:
     return _SYSTEM_PROMPT % (
-        ", ".join(TOOLS),
+        ", ".join(tool_names if tool_names is not None else TOOLS),
         ", ".join(rc.value for rc in RootCause),
         ", ".join(at.value for at in ActionType),
     )
@@ -508,8 +553,9 @@ async def _loop(
                 f"{c['summary']} (by {c['actor']})"
                 for c in changes
             )
+    tools = active_tools(settings)
     messages: list[dict[str, str]] = [
-        {"role": "system", "content": _system_prompt()},
+        {"role": "system", "content": _system_prompt(list(tools))},
         {"role": "user",
          "content": f"Incident findings:\n{findings}{knowledge_block}"},
     ]
@@ -555,7 +601,9 @@ async def _loop(
         # Parallel fan-out over the requested tools (swarm-orchestration pattern).
         results = await asyncio.gather(
             *(
-                _dispatch_tool(str(c.get("tool", "")), dict(c.get("args", {}) or {}), ctx)
+                _dispatch_tool(
+                    str(c.get("tool", "")), dict(c.get("args", {}) or {}), ctx, tools
+                )
                 for c in calls
             )
         )
