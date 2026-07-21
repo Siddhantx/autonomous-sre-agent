@@ -21,6 +21,7 @@ from .blackboard import Blackboard
 from .config import Settings
 from .connectors import Connectors
 from .investigator import LLMClient, investigate, make_llm_client
+from .knowledge import KnowledgeStore
 from .models import IncidentSession, IncidentState, RemediationStatus, RootCause
 from .observability import bind_incident, clear_context, get_logger, get_tracer
 from .reasoner import reason
@@ -39,6 +40,7 @@ class Orchestrator:
         agents: list[DiagnosticAgent] | None = None,
         policy: CompiledPolicy | None = None,
         llm: LLMClient | None = None,
+        knowledge: KnowledgeStore | None = None,
     ) -> None:
         self._settings = settings
         self._connectors = connectors
@@ -48,6 +50,7 @@ class Orchestrator:
         self._remediation = RemediationEngine(settings, connectors)
         # Investigator is disabled unless a model is configured or injected.
         self._llm = llm or (make_llm_client(settings) if settings.llm_model else None)
+        self._knowledge = knowledge
 
     async def handle_incident(self, trigger: str) -> IncidentSession:
         """Run the full pipeline for a new incident and return the record."""
@@ -77,6 +80,12 @@ class Orchestrator:
                 ):
                     self.blackboard.transition(incident_id, IncidentState.FAILED)
             finally:
+                # Learning loop: every terminal outcome becomes a post-mortem.
+                if self._knowledge is not None:
+                    try:
+                        self._knowledge.add_post_mortem(session)
+                    except Exception as exc:
+                        log.warning("post_mortem_failed", error=str(exc))
                 log.info("incident_closed", final_state=session.state.value)
                 clear_context()
             return session
@@ -97,7 +106,8 @@ class Orchestrator:
                 rule_confidence=diagnosis.confidence,
             )
             llm_diagnosis = await investigate(
-                session, self.blackboard, self._connectors, self._settings, self._llm
+                session, self.blackboard, self._connectors, self._settings,
+                self._llm, self._knowledge,
             )
             # Keep the better of the two; investigate() never raises.
             if llm_diagnosis.confidence >= diagnosis.confidence:
