@@ -21,6 +21,7 @@ from pydantic import BaseModel
 from .blackboard import Blackboard, UnknownIncident
 from .config import get_settings
 from .connectors import Connectors
+from .knowledge import KnowledgeStore, ingest_all
 from .models import IncidentSession
 from .observability import configure_observability, get_logger
 from .orchestrator import Orchestrator
@@ -37,16 +38,19 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     configure_observability(settings)
     connectors = Connectors(settings)
+    knowledge = KnowledgeStore(settings.knowledge_db_path)
+    log.info("knowledge_ingested", **ingest_all(knowledge, settings))
     app.state.settings = settings
     app.state.connectors = connectors
     app.state.orchestrator = Orchestrator(
-        settings, connectors, blackboard=Blackboard()
+        settings, connectors, blackboard=Blackboard(), knowledge=knowledge
     )
     log.info("orchestrator_started", environment=settings.environment)
     try:
         yield
     finally:
         await connectors.aclose()
+        knowledge.close()
         log.info("orchestrator_stopped")
 
 

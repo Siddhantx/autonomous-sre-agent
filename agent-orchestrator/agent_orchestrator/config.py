@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     # Root of the lab service sources for the code_search tool.
     lab_source_path: Path = Path(__file__).resolve().parents[2] / "enterprise-lab"
 
+    # --- Knowledge layer ----------------------------------------------------
+    knowledge_db_path: Path = Path("apoe_knowledge.db")
+    runbooks_path: Path = Path(__file__).resolve().parents[1] / "runbooks"
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

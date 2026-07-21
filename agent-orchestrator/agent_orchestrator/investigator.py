@@ -30,6 +30,7 @@ from pydantic import BaseModel
 
 from .blackboard import Blackboard
 from .config import Settings
+from .knowledge import KnowledgeStore
 from .models import (
     ActionType,
     Diagnosis,
@@ -238,6 +239,19 @@ async def _code_search(args: dict, ctx: ToolContext) -> Any:
     return matches or {"info": "no matches"}
 
 
+async def _knowledge_search(args: dict, ctx: ToolContext) -> Any:
+    if ctx.knowledge is None:
+        return {"error": "knowledge store not configured"}
+    query = str(args.get("query", ""))
+    if not query:
+        return {"error": "query required"}
+    hits = ctx.knowledge.search(query, kind=args.get("kind"), limit=5)
+    return [
+        {"kind": h.kind, "ref": h.ref, "title": h.title, "snippet": h.snippet}
+        for h in hits
+    ]
+
+
 async def _blackboard_context(args: dict, ctx: ToolContext) -> Any:
     current = [
         {"agent": f.agent_name, "status": f.status.value, "summary": f.summary,
@@ -261,6 +275,7 @@ class ToolContext:
     session: IncidentSession
     blackboard: Blackboard
     settings: Settings
+    knowledge: KnowledgeStore | None = None
 
 
 TOOLS = {
@@ -276,6 +291,7 @@ TOOLS = {
     "prometheus_query": _prometheus_query,
     "prometheus_range": _prometheus_range,
     "code_search": _code_search,
+    "knowledge_search": _knowledge_search,
     "blackboard_context": _blackboard_context,
 }
 
@@ -327,6 +343,8 @@ Available tools: %s
                        "target": "...", "params": {}, "rationale": "..."}]}
 
 Rules:
+- Consult knowledge_search (runbooks, topology, past incidents) BEFORE
+  querying live infrastructure.
 - Every evidence entry MUST cite the tool that produced it in [brackets].
 - proposed_actions may ONLY use the listed action types. If none fits,
   return an empty list and explain in the rationale why a human must act.
@@ -412,11 +430,12 @@ async def investigate(
     connectors: Connectors,
     settings: Settings,
     llm: LLMClient,
+    knowledge: KnowledgeStore | None = None,
 ) -> Diagnosis:
     """Run the budgeted investigation loop. Never raises; escalates instead."""
     try:
         return await asyncio.wait_for(
-            _loop(session, blackboard, connectors, settings, llm),
+            _loop(session, blackboard, connectors, settings, llm, knowledge),
             timeout=settings.investigator_timeout_s,
         )
     except asyncio.TimeoutError:
@@ -435,8 +454,9 @@ async def _loop(
     connectors: Connectors,
     settings: Settings,
     llm: LLMClient,
+    knowledge: KnowledgeStore | None = None,
 ) -> Diagnosis:
-    ctx = ToolContext(connectors, session, blackboard, settings)
+    ctx = ToolContext(connectors, session, blackboard, settings, knowledge)
     findings = json.dumps(
         [
             {"agent": f.agent_name, "status": f.status.value, "summary": f.summary,
@@ -445,9 +465,20 @@ async def _loop(
         ],
         default=str,
     )
+    # Knowledge first, deterministically: seed the context with runbook /
+    # past-incident hits before the LLM can touch live infrastructure.
+    knowledge_block = ""
+    if knowledge is not None:
+        seed = " ".join(f.summary for f in session.findings if f.is_fault) or "incident"
+        hits = knowledge.search(seed, limit=5)
+        if hits:
+            knowledge_block = "\n\nKnowledge base (pre-searched):\n" + "\n".join(
+                f"- [{h.kind}] {h.title} ({h.ref}): {h.snippet}" for h in hits
+            )
     messages: list[dict[str, str]] = [
         {"role": "system", "content": _system_prompt()},
-        {"role": "user", "content": f"Incident findings:\n{findings}"},
+        {"role": "user",
+         "content": f"Incident findings:\n{findings}{knowledge_block}"},
     ]
     tokens_used = 0
     tracer = get_tracer()

@@ -328,14 +328,20 @@ async def test_all_tool_handlers_dispatch(tmp_path):
             instant_query=instant_query, range_query=range_query
         ),
     )
+    from agent_orchestrator.knowledge import KnowledgeStore
+
+    knowledge = KnowledgeStore()
+    knowledge.add("runbook", "r.md", "locks", "terminate blockers")
     bb = Blackboard()
     ctx = ToolContext(
-        connectors, make_session(bb), bb, settings(lab_source_path=tmp_path)
+        connectors, make_session(bb), bb, settings(lab_source_path=tmp_path),
+        knowledge,
     )
 
     args_by_tool = {
         "pg_explain": {"query": "SELECT 1"},
         "code_search": {"pattern": "max_connections"},
+        "knowledge_search": {"query": "blockers"},
         "prometheus_query": {"query": "up"},
         "prometheus_range": {"query": "up", "start": "0", "end": "1", "step": "60s"},
     }
