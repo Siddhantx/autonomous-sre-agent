@@ -363,6 +363,50 @@ async def test_all_tool_handlers_dispatch(tmp_path):
     )
 
 
+def test_provider_layer_selection_and_registration():
+    from agent_orchestrator.investigator import PROVIDERS, active_tools, register_provider
+
+    all_tools = active_tools(settings(tool_providers="all"))
+    assert set(all_tools) == {n for p in PROVIDERS.values() for n in p}
+
+    subset = active_tools(settings(tool_providers="postgres, logs"))
+    assert "pg_blocking" in subset and "log_search" in subset
+    assert "redis_info" not in subset and "kafka_consumer_lag" not in subset
+
+    # Unknown provider names are ignored, not fatal
+    assert active_tools(settings(tool_providers="postgres, nope")) == active_tools(
+        settings(tool_providers="postgres")
+    )
+
+    async def custom_tool(args, ctx):
+        return {"ok": True}
+
+    register_provider("cloudwatch", {"cw_metric": custom_tool})
+    try:
+        assert "cw_metric" in active_tools(settings(tool_providers="cloudwatch"))
+        assert "cw_metric" in active_tools(settings(tool_providers="all"))
+    finally:
+        del PROVIDERS["cloudwatch"]
+
+
+async def test_loop_respects_provider_subset():
+    """A tool outside the enabled providers errors; the prompt only lists enabled."""
+    llm = FakeLLM(
+        [
+            tool_reply({"tool": "redis_info", "args": {}}),
+            diagnose_reply(root_cause="unknown", confidence=0.1, rationale="x"),
+        ]
+    )
+    bb = Blackboard()
+    d = await investigate(
+        make_session(bb), bb, fake_connectors(),
+        settings(tool_providers="postgres"), llm,
+    )
+    assert d.root_cause is RootCause.UNKNOWN
+    assert "redis_info" not in llm.calls[0]["messages"][0]["content"]
+    assert "unknown tool" in llm.calls[1]["messages"][-1]["content"]
+
+
 async def test_log_search_builds_safe_logql():
     from agent_orchestrator.investigator import ToolContext, _dispatch_tool
 
