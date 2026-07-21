@@ -8,12 +8,21 @@ autonomy must be earned: default-deny policy, human-approval workflow,
 append-only audit log, and an eval harness whose hard gate is **zero unsafe
 actions, ever**.
 
-**The result that matters** (from [`agent-orchestrator/evals/RESULTS.md`](agent-orchestrator/evals/RESULTS.md)):
-on five novel faults no deterministic rule covers, the rules-only pipeline
-diagnoses **0%** — it closes real incidents as healthy or mislabels them —
-while the rules+LLM-investigator pipeline diagnoses them correctly and
-escalates each one with cited evidence, with **0 unsafe actions** across
-every run. The LLM proposes; the safety policy and idempotent engine dispose.
+**The results** — measured by the eval harness on five novel faults no
+deterministic rule covers:
+
+| Configuration | Root-cause accuracy | Unsafe actions |
+|---|---|---|
+| Rules only | 0% — closes real incidents as healthy or mislabels them | 0 |
+| + scripted LLM ([RESULTS.md](agent-orchestrator/evals/RESULTS.md), the architecture ceiling / CI gate) | 100% | 0 |
+| + qwen2.5:3b, smallest usable air-gapped model, 8GB laptop, CPU-only ([RESULTS-local-llm.md](agent-orchestrator/evals/RESULTS-local-llm.md)) | 27% (60% correct escalation) | 0 |
+
+The safety number is the point: **zero unsafe actions across every mode and
+every model** — including a deliberately undersized 1.5B model that failed
+every diagnosis. A weak LLM degrades diagnostic value, never safety. The LLM
+proposes; the default-deny policy and idempotent engine dispose. Larger
+models close the accuracy gap toward the scripted ceiling — run
+`evals/run_evals.py --live` with your provider to measure yours.
 
 ```
 observe (agents, 10s timeouts, graceful degradation)
