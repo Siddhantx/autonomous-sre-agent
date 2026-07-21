@@ -11,11 +11,14 @@ runs anything itself.
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
 
+from .config import Settings
 from .models import ProposedAction, _utcnow
 
 
@@ -66,3 +69,51 @@ class ApprovalQueue:
         item.reason = reason
         item.resolved_at = _utcnow()
         return item
+
+
+def promotion_candidates(settings: Settings) -> list[dict[str, Any]]:
+    """Actions humans keep approving — candidates for an auto-allow rule.
+
+    Derived from the append-only audit log (restart-safe by construction):
+    an (action_type, target) pair with >= APOE_PROMOTION_THRESHOLD
+    *consecutive* approvals and no later rejection becomes a candidate.
+    Nothing is auto-applied — the output is a ready-to-review YAML rule a
+    human merges into policies.yaml.
+    """
+    streaks: dict[tuple[str, str], int] = {}
+    try:
+        lines = settings.audit_log_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if record.get("event") not in ("approved", "rejected"):
+            continue
+        key = (str(record.get("action_type")), str(record.get("target", "*")))
+        if record["event"] == "approved":
+            streaks[key] = streaks.get(key, 0) + 1
+        else:
+            streaks[key] = 0  # a rejection resets the streak
+
+    candidates = []
+    for (action_type, target), streak in sorted(streaks.items()):
+        if streak >= settings.promotion_threshold:
+            candidates.append(
+                {
+                    "action_type": action_type,
+                    "target": target,
+                    "consecutive_approvals": streak,
+                    "suggested_rule": (
+                        f"- name: allow-{action_type.replace('_', '-')}\n"
+                        f"  effect: allow\n"
+                        f"  match:\n"
+                        f"    action_types: [\"{action_type}\"]\n"
+                        f"    targets: [\"{target}\"]\n"
+                        f"    min_confidence: 0.8\n"
+                    ),
+                }
+            )
+    return candidates

@@ -291,6 +291,53 @@ def test_change_webhook_records_and_lists(client):
     ).status_code == 401
 
 
+# ---------------------------------------------------------------------------
+# Policy promotion pipeline
+# ---------------------------------------------------------------------------
+def test_promotion_candidates_from_audit(tmp_path):
+    from agent_orchestrator.approvals import promotion_candidates
+
+    settings = Settings(audit_log_path=tmp_path / "audit.jsonl",
+                        promotion_threshold=3)
+    assert promotion_candidates(settings) == []  # no file yet
+
+    def emit(event, action="noop", target="none"):
+        audit_event(settings, event, incident_id="i", action_type=action,
+                    target=target)
+
+    emit("approved")
+    emit("approved")
+    assert promotion_candidates(settings) == []  # streak of 2 < threshold
+    emit("approved")
+    cands = promotion_candidates(settings)
+    assert len(cands) == 1
+    assert cands[0]["consecutive_approvals"] == 3
+    assert 'action_types: ["noop"]' in cands[0]["suggested_rule"]
+    assert "effect: allow" in cands[0]["suggested_rule"]
+
+    # A rejection resets the streak
+    emit("rejected")
+    emit("approved")
+    assert promotion_candidates(settings) == []
+    # Different (action, target) pairs are tracked independently
+    for _ in range(3):
+        emit("approved", action="flush_cache_key", target="redis")
+    assert [c["action_type"] for c in promotion_candidates(settings)] \
+        == ["flush_cache_key"]
+
+
+def test_policy_suggestions_endpoint(client, tmp_path):
+    app_state = client.app.state
+    app_state.orchestrator.blackboard.create("inc-p", "test")
+    noop = ProposedAction(action_type=ActionType.NOOP, target="none")
+    for _ in range(3):
+        item = app_state.approvals.enqueue("inc-p", noop, 0.9)
+        client.post(f"/approvals/{item.approval_id}/approve", headers=AUTH)
+    suggestions = client.get("/policy/suggestions").json()
+    assert suggestions and suggestions[0]["action_type"] == "noop"
+    assert suggestions[0]["consecutive_approvals"] >= 3
+
+
 def test_approval_unknown_id_404(client):
     assert client.post("/approvals/apr-nope/approve", headers=AUTH).status_code == 404
     assert client.post(
