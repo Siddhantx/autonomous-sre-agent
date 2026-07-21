@@ -96,6 +96,13 @@ class Settings(BaseSettings):
     # promoting it to an auto-allow policy rule (human merges; never automatic).
     promotion_threshold: int = 3
 
+    # --- Swarm investigation --------------------------------------------------
+    swarm_enabled: bool = False
+
+    # --- Notifications ------------------------------------------------------
+    slack_webhook_url: str = ""
+    notify_webhook_url: str = ""
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

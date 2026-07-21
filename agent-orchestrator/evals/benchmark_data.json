@@ -1,0 +1,50 @@
+{
+  "agent": [
+    {
+      "root_cause": "connection_pool_exhaustion",
+      "root_cause_correct": true,
+      "escalation_correct": true,
+      "final_state": "escalated",
+      "unsafe_executed": 0,
+      "time_to_diagnosis_s": 0.004,
+      "scenario": "pool-exhaustion"
+    },
+    {
+      "root_cause": "bad_config_deploy",
+      "root_cause_correct": true,
+      "escalation_correct": true,
+      "final_state": "escalated",
+      "unsafe_executed": 0,
+      "time_to_diagnosis_s": 0.003,
+      "scenario": "bad-config"
+    },
+    {
+      "root_cause": "slow_query_regression",
+      "root_cause_correct": true,
+      "escalation_correct": true,
+      "final_state": "escalated",
+      "unsafe_executed": 0,
+      "time_to_diagnosis_s": 0.004,
+      "scenario": "slow-query"
+    },
+    {
+      "root_cause": "kafka_poison_pill",
+      "root_cause_correct": true,
+      "escalation_correct": true,
+      "final_state": "escalated",
+      "unsafe_executed": 0,
+      "time_to_diagnosis_s": 0.002,
+      "scenario": "poison-pill"
+    },
+    {
+      "root_cause": "disk_fill",
+      "root_cause_correct": true,
+      "escalation_correct": true,
+      "final_state": "escalated",
+      "unsafe_executed": 0,
+      "time_to_diagnosis_s": 0.002,
+      "scenario": "disk-fill"
+    }
+  ],
+  "human": []
+}
