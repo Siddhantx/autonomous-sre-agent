@@ -148,15 +148,19 @@ def score_session(session, scenario: Scenario, elapsed_s: float) -> dict:
 
 
 async def run_fake(scenario: Scenario, use_investigator: bool,
-                   settings: Settings) -> dict:
+                   settings: Settings, real_llm=None) -> dict:
+    """Synthetic connectors; LLM is scripted unless a real client is given."""
     knowledge = KnowledgeStore()
     ingest_runbooks(knowledge, RUNBOOKS)
+    llm = None
+    if use_investigator:
+        llm = real_llm or ScriptedLLM(scenario.fake_script)
     orch = Orchestrator(
         settings,
         fake_connectors(scenario),  # type: ignore[arg-type]
         blackboard=Blackboard(),
         agents=[StubAgent(f) for f in scenario.findings],
-        llm=ScriptedLLM(scenario.fake_script) if use_investigator else None,
+        llm=llm,
         knowledge=knowledge,
     )
     started = time.perf_counter()
@@ -257,17 +261,24 @@ async def main() -> int:
                         help="scripted LLM + synthetic connectors (no spend)")
     parser.add_argument("--live", action="store_true",
                         help="inject real faults via the chaos-injector")
+    parser.add_argument("--ollama", metavar="MODEL",
+                        help="REAL local model via Ollama against the synthetic "
+                             "telemetry (offline, no spend, no docker)")
     parser.add_argument("--out", type=Path,
                         default=Path(__file__).parent / "RESULTS.md")
     args = parser.parse_args()
-    if not args.fake_llm and not args.live:
-        parser.error("choose --fake-llm (offline) and/or --live (lab required)")
+    if not args.fake_llm and not args.live and not args.ollama:
+        parser.error("choose --fake-llm, --ollama MODEL, and/or --live")
 
     settings = Settings(
         otel_enabled=False,
         audit_log_path=Path(tempfile.gettempdir()) / "apoe_eval_audit.jsonl",
-        investigator_timeout_s=60.0,
+        investigator_timeout_s=300.0 if args.ollama else 60.0,
+        llm_provider="openai",
+        llm_base_url="http://localhost:11434/v1",
+        llm_model=args.ollama or "",
     )
+    real_llm = make_llm_client(settings) if args.ollama else None
 
     table: dict[str, dict[str, dict]] = {}
     for scenario in SCENARIOS:
@@ -280,14 +291,20 @@ async def main() -> int:
                     record = await run_live(scenario, use_inv, settings,
                                             fake_llm=args.fake_llm)
                 else:
-                    record = await run_fake(scenario, use_inv, settings)
+                    record = await run_fake(scenario, use_inv, settings,
+                                            real_llm=real_llm)
                 runs.append(record)
             table[scenario.name][config_name] = aggregate(runs)
             print(f"{scenario.name:16s} {config_name:20s} "
                   f"acc={table[scenario.name][config_name]['accuracy']:.0%} "
                   f"unsafe={table[scenario.name][config_name]['unsafe']}")
 
-    mode = "live" if args.live else "fake-llm (offline)"
+    if args.live:
+        mode = "live"
+    elif args.ollama:
+        mode = f"real local LLM ({args.ollama} via Ollama) on synthetic telemetry"
+    else:
+        mode = "fake-llm (offline)"
     write_results(args.out, mode, args.runs, table)
     print(f"\nwrote {args.out}")
 
@@ -295,7 +312,7 @@ async def main() -> int:
     if total_unsafe > 0:
         print(f"HARD GATE FAILED: {total_unsafe} unsafe action(s) executed")
         return 1
-    if args.fake_llm and not args.live:
+    if args.fake_llm and not args.live and not args.ollama:
         inv_acc = statistics.mean(
             s["rules+investigator"]["accuracy"] for s in table.values()
         )
