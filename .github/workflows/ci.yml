@@ -1,0 +1,145 @@
+# CI for the PUBLISHED repository (github.com/Siddhantx/autonomous-sre-agent).
+#
+# This file is the counterpart of the monorepo's /.github/workflows/ci.yml.
+# Two files are needed because the published repo is produced by
+# `git subtree split -P apoe-monorepo-V1`, so this directory becomes the
+# repository root there: paths lose the `apoe-monorepo-V1/` prefix, and a
+# workflow at the monorepo root is outside the published prefix entirely and
+# would never ship.
+#
+# The two differ ONLY in paths and triggers. tests/test_ci_workflows.py pins
+# that: if a job or step is added to one and not the other, it fails.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:   # enables the opt-in judged-eval job
+
+defaults:
+  run:
+    working-directory: agent-orchestrator
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: agent-orchestrator/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install ruff mypy types-PyYAML
+
+      - name: Lint (ruff)
+        run: ruff check agent_orchestrator evals tests
+
+      - name: Type-check (mypy strict)
+        run: mypy agent_orchestrator
+
+      - name: Type-check the eval layer (mypy strict)
+        # follow-imports=silent: the legacy evals/*.py scripts predate strict
+        # typing and are out of scope; this checks the llm_eval package itself.
+        run: mypy --strict --follow-imports=silent evals/llm_eval
+
+      - name: Tests + coverage gate (>=85% on pure modules)
+        run: >
+          pytest
+          --cov=agent_orchestrator.reasoner
+          --cov=agent_orchestrator.safety
+          --cov=agent_orchestrator.blackboard
+          --cov=agent_orchestrator.investigator
+          --cov=agent_orchestrator.knowledge
+          --cov=agent_orchestrator.approvals
+          --cov=agent_orchestrator.audit
+          --cov-report=term-missing
+          --cov-fail-under=85
+
+      - name: Eval harness (fake-llm, hard safety gate)
+        run: python evals/run_evals.py --fake-llm --runs 3
+
+  genai-eval:
+    # The GenAI evaluation layer. Runs in the MAIN environment on purpose:
+    # the deterministic metrics and the red-team suite need no model, no
+    # network and no extra dependency, which is exactly why they can gate a
+    # build. The judged (DeepEval) tier cannot — see `judged-eval` below.
+    name: GenAI evaluation (deterministic tier)
+    runs-on: ubuntu-latest
+    needs: quality
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: agent-orchestrator/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Validate the benchmark dataset
+        # A malformed benchmark scores a correct agent as wrong forever, so
+        # the dataset is validated before anything is run against it.
+        run: |
+          python -c "
+          import sys; sys.path.insert(0, 'evals')
+          from llm_eval.dataset import load_benchmark
+          b = load_benchmark()
+          print(f'benchmark v{b.version}: {len(b.scenarios)} scenarios validated')
+          "
+
+      - name: Red-team suite (hard gate)
+        # Adversarial model output must never reach infrastructure. This is
+        # the one eval gate that fails the build.
+        run: python evals/llm_eval/run.py --redteam
+
+      - name: Benchmark baseline + scorecard
+        # Accuracy is reported, never gated: a weak model should produce a low
+        # score and a green build. Only a safety violation exits non-zero.
+        run: python evals/llm_eval/run.py
+
+      - name: Upload evaluation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evaluation-reports
+          path: agent-orchestrator/evals/reports/
+
+  judged-eval:
+    # LLM-judged metrics (DeepEval). Manual dispatch only, for two reasons:
+    #
+    #   1. DeepEval cannot be installed beside the agent. pip rejects the
+    #      combination outright (ResolutionImpossible): it needs
+    #      opentelemetry-sdk >= 1.44 and pydantic >= 2.11.7, while the agent
+    #      pins otel 1.23.0 / pydantic 2.7.1. Hence its own environment.
+    #   2. Judged metrics need a judge model. Pointing CI at a paid API would
+    #      bill every push; pointing it at a local model needs a runner with
+    #      one. Neither belongs on an automatic trigger.
+    name: GenAI evaluation (judged tier, opt-in)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: agent-orchestrator/requirements-eval.txt
+
+      - name: Install the isolated eval environment
+        run: pip install -r requirements-eval.txt
+
+      - name: Judged-tier mapping tests
+        # The APOE -> DeepEval mapping is pure and verifiable without a judge
+        # model; the scored metrics themselves need one and are not run here.
+        run: pytest tests/test_eval_judged.py -v
