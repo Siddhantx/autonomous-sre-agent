@@ -24,7 +24,13 @@ from .config import Settings
 from .connectors import Connectors
 from .investigator import LLMClient, investigate, make_llm_client
 from .knowledge import KnowledgeStore
-from .models import IncidentSession, IncidentState, RemediationStatus, RootCause
+from .models import (
+    IncidentSession,
+    IncidentState,
+    InvestigationTrace,
+    RemediationStatus,
+    RootCause,
+)
 from .notifications import notify
 from .observability import bind_incident, clear_context, get_logger, get_tracer
 from .reasoner import reason
@@ -45,6 +51,7 @@ class Orchestrator:
         llm: LLMClient | None = None,
         knowledge: KnowledgeStore | None = None,
         approvals: ApprovalQueue | None = None,
+        trace: InvestigationTrace | None = None,
     ) -> None:
         self._settings = settings
         self._connectors = connectors
@@ -56,6 +63,10 @@ class Orchestrator:
         self._llm = llm or (make_llm_client(settings) if settings.llm_model else None)
         self.knowledge = knowledge
         self._approvals = approvals
+        # Evaluation hook: when supplied, the investigator fills this in place.
+        # One Orchestrator per incident if you want a clean trace — a reused
+        # instance accumulates every incident's steps into the same object.
+        self._trace = trace
 
     async def handle_incident(self, trigger: str) -> IncidentSession:
         """Run the full pipeline for a new incident and return the record."""
@@ -125,7 +136,7 @@ class Orchestrator:
             )
             llm_diagnosis = await investigate(
                 session, self.blackboard, self._connectors, self._settings,
-                self._llm, self.knowledge,
+                self._llm, self.knowledge, self._trace,
             )
             # Keep the better of the two; investigate() never raises.
             if llm_diagnosis.confidence >= diagnosis.confidence:
