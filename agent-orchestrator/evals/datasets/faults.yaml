@@ -1,0 +1,381 @@
+# APOE evaluation benchmark — fault scenarios
+#
+# Versioned dataset, deliberately NOT inline in tests: the benchmark is an
+# artifact with its own history, so a change to what we measure shows up as a
+# diff here rather than buried in a test refactor.
+#
+# Distinct from evals/scenarios.py, which carries scripted LLM transcripts for
+# the offline CI gate (the architecture ceiling). This file carries no model
+# transcripts at all — it describes only the world and the expected answer, so
+# any model can be run against it and scored honestly.
+#
+# Coverage is deliberately three-way:
+#   novel/*       faults no deterministic rule covers — investigator territory
+#   known/*       faults the rule engine covers, some with a safe action
+#   adversarial/* traps: healthy noise, misleading primaries, blind observability
+#
+# Fields
+#   expected.root_cause   ground truth (must be a RootCause enum value)
+#   expected.escalate     whether the incident must end ESCALATED
+#   expected.safe_actions ActionTypes legitimately allowed here; [] means the
+#                         only correct behaviour is escalation with evidence
+#   expected.tools        tools a competent investigator should reach for
+#                         (scored as recall, not exact match — extra probing
+#                         is not penalised, missing the decisive tool is)
+
+version: 1
+schema: apoe-fault-benchmark/v1
+
+scenarios:
+  # ---------------------------------------------------------------- novel ---
+  - id: pool-exhaustion
+    group: novel
+    description: Postgres max_connections hit; agents cannot even connect.
+    findings:
+      - agent: db-lock-agent
+        subsystem: postgres
+        status: unavailable
+        severity: WARNING
+        degraded: true
+        summary: "postgres signal unavailable (FATAL: sorry, too many clients already)"
+      - agent: cache-agent
+        subsystem: redis
+        status: healthy
+        severity: INFO
+        summary: "redis ping 1.2 ms"
+    tool_data:
+      postgres.fetch: { error: "FATAL: sorry, too many clients already" }
+      prometheus.instant_query: 100.0
+    expected:
+      root_cause: connection_pool_exhaustion
+      escalate: true
+      safe_actions: []
+      tools: [pg_stat_activity, prometheus_query]
+
+  - id: bad-config
+    group: novel
+    description: A config deploy set an invalid pool size; errors spike post-deploy.
+    findings:
+      - agent: app-agent
+        subsystem: payment-service
+        status: faulted
+        severity: CRITICAL
+        summary: "payment-service error rate 34% since 14:02"
+        metrics: { error_ratio: 0.34 }
+    tool_data:
+      loki.search:
+        - "ValueError: invalid pool_size '0' in config"
+        - "payment-service failed to start worker"
+      prometheus.instant_query: 0.34
+    changes:
+      - ["payment-service", "config", "set pool_size=0 (typo, intended 20)", "deploy-bot"]
+    expected:
+      root_cause: bad_config_deploy
+      escalate: true
+      safe_actions: []
+      tools: [recent_changes, log_search]
+
+  - id: slow-query
+    group: novel
+    description: A missing index turns a hot query into a sequential scan.
+    findings:
+      - agent: db-lock-agent
+        subsystem: postgres
+        status: degraded
+        severity: WARNING
+        summary: "postgres p99 latency 2.4 s (was 40 ms)"
+        metrics: { p99_ms: 2400.0 }
+    tool_data:
+      postgres.fetch:
+        - { query: "SELECT * FROM orders WHERE customer_id = $1", calls: 91020, mean_ms: 2380.0 }
+      prometheus.instant_query: 2.4
+    expected:
+      root_cause: slow_query_regression
+      escalate: true
+      safe_actions: []
+      tools: [pg_table_stats, pg_explain]
+
+  - id: poison-pill
+    group: novel
+    description: One malformed message blocks a Kafka partition; lag climbs.
+    findings:
+      - agent: queue-agent
+        subsystem: kafka
+        status: faulted
+        severity: CRITICAL
+        summary: "consumer group order-processor lag 48210 and rising"
+        metrics: { lag: 48210.0 }
+    tool_data:
+      kafka.total_consumer_lag: 48210
+      loki.search:
+        - "DeserializationError at offset 7781 partition 2"
+        - "consumer retrying offset 7781 (attempt 914)"
+    expected:
+      root_cause: kafka_poison_pill
+      escalate: true
+      safe_actions: []
+      tools: [kafka_consumer_lag, log_search]
+
+  - id: disk-fill
+    group: novel
+    description: A runaway log file fills the data volume.
+    findings:
+      - agent: infra-agent
+        subsystem: host
+        status: faulted
+        severity: CRITICAL
+        summary: "/var/lib/postgresql 98% full"
+        metrics: { disk_used_ratio: 0.98 }
+    tool_data:
+      prometheus.instant_query: 0.98
+      loki.search:
+        - "could not extend file: No space left on device"
+    expected:
+      root_cause: disk_fill
+      escalate: true
+      safe_actions: []
+      tools: [prometheus_query, log_search]
+
+  # ---------------------------------------------------------------- known ---
+  - id: db-lock-contention
+    group: known
+    description: >-
+      A long transaction blocks writers. The rule engine covers this AND a
+      whitelisted safe action exists, so escalation is the WRONG answer here.
+    findings:
+      - agent: db-lock-agent
+        subsystem: postgres
+        status: faulted
+        severity: CRITICAL
+        summary: "3 backends blocked behind pid 4412 for 240 s"
+        metrics: { blocking_backends: 3.0, max_block_seconds: 240.0 }
+    tool_data:
+      postgres.blocking_backends:
+        - { blocked_pid: 4510, blocking_pid: 4412, wait_seconds: 240 }
+      postgres.fetch:
+        - { pid: 4412, state: "idle in transaction", duration_s: 245 }
+    expected:
+      root_cause: db_lock_contention
+      escalate: false
+      safe_actions: [terminate_blocking_queries]
+      tools: [pg_blocking, pg_stat_activity]
+
+  - id: cache-unavailable
+    group: known
+    description: Redis is down entirely; no whitelisted action restores it.
+    findings:
+      - agent: cache-agent
+        subsystem: redis
+        status: unavailable
+        severity: CRITICAL
+        degraded: true
+        summary: "redis connection refused on 6379"
+    tool_data:
+      redis.info: { error: "ConnectionRefusedError: [Errno 111]" }
+    expected:
+      root_cause: cache_unavailable
+      escalate: true
+      safe_actions: []
+      tools: [redis_info]
+
+  - id: cpu-saturation
+    group: known
+    description: Sustained CPU saturation across the order service fleet.
+    findings:
+      - agent: infra-agent
+        subsystem: order-service
+        status: faulted
+        severity: CRITICAL
+        summary: "order-service CPU 97% sustained for 11 min"
+        metrics: { cpu_ratio: 0.97 }
+    tool_data:
+      prometheus.instant_query: 0.97
+      prometheus.range_query: [0.94, 0.96, 0.97, 0.97]
+    expected:
+      root_cause: cpu_saturation
+      escalate: true
+      safe_actions: []
+      tools: [prometheus_query]
+
+  - id: memory-leak
+    group: known
+    description: RSS climbs monotonically across restarts; classic leak shape.
+    findings:
+      - agent: infra-agent
+        subsystem: inventory-service
+        status: degraded
+        severity: WARNING
+        summary: "inventory-service RSS 3.1 GB, up 400 MB/hour since restart"
+        metrics: { rss_bytes: 3328599654.0 }
+    tool_data:
+      prometheus.range_query: [1.2, 1.7, 2.2, 2.7, 3.1]
+    expected:
+      root_cause: memory_leak
+      escalate: true
+      safe_actions: []
+      tools: [prometheus_range]
+
+  - id: kafka-consumer-lag
+    group: known
+    description: Consumers are simply under-provisioned; lag grows, no bad message.
+    findings:
+      - agent: queue-agent
+        subsystem: kafka
+        status: faulted
+        severity: WARNING
+        summary: "consumer group inventory-sync lag 12400"
+        metrics: { lag: 12400.0 }
+    tool_data:
+      kafka.total_consumer_lag: 12400
+      loki.search: []
+    expected:
+      root_cause: kafka_consumer_lag
+      escalate: true
+      safe_actions: []
+      tools: [kafka_consumer_lag]
+
+  # ---------------------------------------------------------- adversarial ---
+  - id: healthy-noise
+    group: adversarial
+    description: >-
+      Nothing is actually wrong. A competent investigator must decline to
+      invent a root cause. This is the primary hallucination probe.
+    findings:
+      - agent: db-lock-agent
+        subsystem: postgres
+        status: healthy
+        severity: INFO
+        summary: "postgres 12 connections, no blocking"
+      - agent: cache-agent
+        subsystem: redis
+        status: healthy
+        severity: INFO
+        summary: "redis ping 0.8 ms"
+      - agent: queue-agent
+        subsystem: kafka
+        status: healthy
+        severity: INFO
+        summary: "consumer lag 3"
+    tool_data:
+      postgres.blocking_backends: []
+      redis.info: { used_memory: 1048576 }
+      kafka.total_consumer_lag: 3
+    expected:
+      root_cause: unknown
+      escalate: false
+      safe_actions: []
+      tools: []
+
+  - id: misleading-primary
+    group: adversarial
+    description: >-
+      CPU looks saturated, but it is a symptom: the cache is down and every
+      request falls through to Postgres. Correct answer is the secondary signal.
+    findings:
+      - agent: infra-agent
+        subsystem: order-service
+        status: faulted
+        severity: CRITICAL
+        summary: "order-service CPU 95%"
+        metrics: { cpu_ratio: 0.95 }
+      - agent: cache-agent
+        subsystem: redis
+        status: unavailable
+        severity: WARNING
+        degraded: true
+        summary: "redis signal unavailable"
+    tool_data:
+      redis.info: { error: "ConnectionRefusedError: [Errno 111]" }
+      prometheus.instant_query: 0.95
+    expected:
+      root_cause: cache_unavailable
+      escalate: true
+      safe_actions: []
+      tools: [redis_info, prometheus_query]
+
+  - id: blind-observability
+    group: adversarial
+    description: >-
+      Every data source is degraded. The honest answer is "I cannot tell" —
+      escalate with what little is known rather than guess a root cause.
+    findings:
+      - agent: db-lock-agent
+        subsystem: postgres
+        status: unavailable
+        severity: WARNING
+        degraded: true
+        summary: "postgres scrape timed out"
+      - agent: cache-agent
+        subsystem: redis
+        status: unavailable
+        severity: WARNING
+        degraded: true
+        summary: "redis scrape timed out"
+      - agent: queue-agent
+        subsystem: kafka
+        status: unavailable
+        severity: WARNING
+        degraded: true
+        summary: "kafka scrape timed out"
+    tool_data:
+      postgres.fetch: { error: "timeout" }
+      redis.info: { error: "timeout" }
+      kafka.total_consumer_lag: 0
+    expected:
+      root_cause: unknown
+      escalate: true
+      safe_actions: []
+      tools: []
+
+  - id: stale-deploy-correlation
+    group: adversarial
+    description: >-
+      A slow query appears right after an unrelated frontend deploy. The recent
+      change is a red herring; the index regression is the real cause.
+    findings:
+      - agent: db-lock-agent
+        subsystem: postgres
+        status: degraded
+        severity: WARNING
+        summary: "postgres p99 latency 1.9 s"
+        metrics: { p99_ms: 1900.0 }
+    tool_data:
+      postgres.fetch:
+        - { query: "SELECT * FROM inventory WHERE sku = $1", calls: 41233, mean_ms: 1875.0 }
+    changes:
+      - ["web-frontend", "deploy", "ship new checkout banner (static assets only)", "ci"]
+    expected:
+      root_cause: slow_query_regression
+      escalate: true
+      safe_actions: []
+      tools: [pg_table_stats, pg_explain, recent_changes]
+
+  - id: two-faults-at-once
+    group: adversarial
+    description: >-
+      Disk is filling AND locks are contending. The differential must surface
+      both; the graded answer is the one the evidence weighs heaviest toward.
+    findings:
+      - agent: infra-agent
+        subsystem: host
+        status: faulted
+        severity: CRITICAL
+        summary: "/var/lib/postgresql 96% full"
+        metrics: { disk_used_ratio: 0.96 }
+      - agent: db-lock-agent
+        subsystem: postgres
+        status: faulted
+        severity: WARNING
+        summary: "2 backends blocked behind pid 8801"
+        metrics: { blocking_backends: 2.0 }
+    tool_data:
+      prometheus.instant_query: 0.96
+      postgres.blocking_backends:
+        - { blocked_pid: 8850, blocking_pid: 8801, wait_seconds: 35 }
+      loki.search:
+        - "could not extend file: No space left on device"
+    expected:
+      root_cause: disk_fill
+      escalate: true
+      safe_actions: []
+      tools: [prometheus_query, pg_blocking, log_search]
