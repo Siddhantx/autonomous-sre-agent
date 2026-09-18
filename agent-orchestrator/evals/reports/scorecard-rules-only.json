@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-18T17:58:16+00:00",
+  "generated_at": "2026-09-18T18:36:49+00:00",
   "mode": "rules-only",
   "model": "none (deterministic rules only)",
   "scenario_count": 15,
@@ -59,7 +59,7 @@
       "tools_called": [],
       "trace_outcome": "unknown",
       "tokens": 0,
-      "wall_ms": 440.83,
+      "wall_ms": 429.51,
       "latency": {
         "steps": 0,
         "total_ms": 0.0,
@@ -131,7 +131,7 @@
       "tools_called": [],
       "trace_outcome": "unknown",
       "tokens": 0,
-      "wall_ms": 333.24,
+      "wall_ms": 329.87,
       "latency": {
         "steps": 0,
         "total_ms": 0.0,
@@ -203,7 +203,7 @@
       "tools_called": [],
       "trace_outcome": "unknown",
       "tokens": 0,
-      "wall_ms": 330.95,
+      "wall_ms": 328.17,
       "latency": {
         "steps": 0,
         "total_ms": 0.0,
@@ -275,7 +275,7 @@
       "tools_called": [],
       "trace_outcome": "unknown",
       "tokens": 0,
-      "wall_ms": 325.09,
+      "wall_ms": 328.07,
       "latency": {
         "steps": 0,
         "total_ms": 0.0,
@@ -347,7 +347,7 @@
       "tools_called": [],
       "trace_outcome": "unknown",
       "tokens": 0,
-      "wall_ms": 327.09,
+      "wall_ms": 333.89,
       "latency": {
         "steps": 0,
         "total_ms": 0.0,
@@ -419,7 +419,7 @@
       "tools_called": [],
       "trace_outcome": "unknown",
       "tokens": 0,
-      "wall_ms": 332.53,
+      "wall_ms": 336.39,
       "latency": {
         "steps": 0,
         "total_ms": 0.0,
@@ -491,7 +491,7 @@
       "tools_called": [],
       "trace_outcome": "unknown",
       "tokens": 0,
-      "wall_ms": 329.95,
+      "wall_ms": 328.55,
       "latency": {
         "steps": 0,
         "total_ms": 0.0,
@@ -563,7 +563,7 @@
       "tools_called": [],
       "trace_outcome": "unknown",
       "tokens": 0,
-      "wall_ms": 327.49,
+      "wall_ms": 331.33,
       "latency": {
         "steps": 0,
         "total_ms": 0.0,
@@ -635,7 +635,7 @@
       "tools_called": [],
       "trace_outcome": "unknown",
       "tokens": 0,
-      "wall_ms": 326.82,
+      "wall_ms": 349.97,
       "latency": {
         "steps": 0,
         "total_ms": 0.0,
@@ -707,7 +707,7 @@
       "tools_called": [],
       "trace_outcome": "unknown",
       "tokens": 0,
-      "wall_ms": 327.52,
+      "wall_ms": 329.72,
       "latency": {
         "steps": 0,
         "total_ms": 0.0,
@@ -779,7 +779,7 @@
       "tools_called": [],
       "trace_outcome": "unknown",
       "tokens": 0,
-      "wall_ms": 324.94,
+      "wall_ms": 330.39,
       "latency": {
         "steps": 0,
         "total_ms": 0.0,
@@ -851,7 +851,7 @@
       "tools_called": [],
       "trace_outcome": "unknown",
       "tokens": 0,
-      "wall_ms": 332.82,
+      "wall_ms": 328.89,
       "latency": {
         "steps": 0,
         "total_ms": 0.0,
@@ -923,7 +923,7 @@
       "tools_called": [],
       "trace_outcome": "unknown",
       "tokens": 0,
-      "wall_ms": 329.91,
+      "wall_ms": 328.45,
       "latency": {
         "steps": 0,
         "total_ms": 0.0,
@@ -995,7 +995,7 @@
       "tools_called": [],
       "trace_outcome": "unknown",
       "tokens": 0,
-      "wall_ms": 332.95,
+      "wall_ms": 326.2,
       "latency": {
         "steps": 0,
         "total_ms": 0.0,
@@ -1067,7 +1067,7 @@
       "tools_called": [],
       "trace_outcome": "unknown",
       "tokens": 0,
-      "wall_ms": 330.98,
+      "wall_ms": 329.31,
       "latency": {
         "steps": 0,
         "total_ms": 0.0,

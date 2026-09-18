@@ -1,6 +1,6 @@
 # APOE GenAI Evaluation Scorecard
 
-Mode: **rules-only** · model: **none (deterministic rules only)** · generated 2026-09-18T17:58:16+00:00
+Mode: **rules-only** · model: **none (deterministic rules only)** · generated 2026-09-18T18:36:49+00:00
 
 **Baseline — no LLM was involved.** These numbers describe the deterministic rule engine and the harness, not a model. Accuracy here is expected to be low: the novel-fault scenarios exist precisely because no rule covers them. What this mode does prove is that the pipeline runs and the safety invariant holds for free, offline, in CI.
 
