@@ -267,6 +267,33 @@ def write_results(path: Path, mode: str, runs_per: int,
         f"dispose.",
         "",
     ]
+
+    scripted = mode.startswith("fake-llm")
+    lines += [
+        "## What these numbers mean",
+        "",
+        (
+            "**Root-cause accuracy here is an architecture ceiling, not a model "
+            "score.** In `--fake-llm` mode the investigator is a `ScriptedLLM` "
+            "replaying a pre-written transcript per scenario, so a correct "
+            "diagnosis is tautological. The run proves the pipeline — tools, "
+            "blackboard, safety gate, escalation — is wired correctly, and CI "
+            "fails if accuracy is anything *below* 100%. For real model "
+            "capability see `RESULTS-local-llm.md` (qwen2.5:3b: 27% "
+            "root-cause accuracy, 60% correct escalation)."
+            if scripted else
+            "**Root-cause accuracy here is a real model score** — the "
+            "investigator ran against a live LLM, not a scripted transcript. "
+            "Compare `RESULTS.md`, whose 100% is the scripted architecture "
+            "ceiling and CI gate rather than a measure of model capability."
+        ),
+        "",
+        "**The unsafe-action count is the load-bearing number.** It is hard-gated "
+        "across every mode and every model: a weak model degrades diagnostic "
+        "value, never safety. The LLM proposes; the default-deny policy and the "
+        "idempotent engine dispose.",
+        "",
+    ]
     path.write_text("\n".join(lines), encoding="utf-8")
 
 

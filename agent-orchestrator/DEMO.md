@@ -12,11 +12,20 @@ python evals/run_evals.py --fake-llm
 
 Read the table it prints (full report in `evals/RESULTS.md`): on five faults
 no rule covers, **rules-only scores 0%** — it closes real incidents as
-healthy or mislabels them — while **rules+investigator scores 100% with
-zero unsafe actions**. That contrast is the project.
+healthy or mislabels them — while rules+investigator scores 100% in this
+mode with zero unsafe actions.
+
+That 100% is the **architecture ceiling, not a model score**: `--fake-llm`
+replays a scripted transcript per scenario, so a correct diagnosis is
+tautological. It proves the pipeline is wired correctly, and CI fails if it
+is anything *below* 100%. Against a real air-gapped model (qwen2.5:3b on an
+8GB CPU-only laptop) root-cause accuracy is **27%** — see
+[`evals/RESULTS-local-llm.md`](evals/RESULTS-local-llm.md). What holds across
+every mode and every model is the number that matters: **zero unsafe
+actions**. That invariant is the project.
 
 ```bash
-pytest    # 69 tests, ~6s, no infrastructure needed
+pytest    # 91 tests, ~6s, no infrastructure needed
 ```
 
 ## Minute 1–3: bring up the lab and watch a full autonomous incident

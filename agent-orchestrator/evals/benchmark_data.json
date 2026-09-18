@@ -6,7 +6,7 @@
       "escalation_correct": true,
       "final_state": "escalated",
       "unsafe_executed": 0,
-      "time_to_diagnosis_s": 0.004,
+      "time_to_diagnosis_s": 0.447,
       "scenario": "pool-exhaustion"
     },
     {
@@ -15,7 +15,7 @@
       "escalation_correct": true,
       "final_state": "escalated",
       "unsafe_executed": 0,
-      "time_to_diagnosis_s": 0.003,
+      "time_to_diagnosis_s": 0.334,
       "scenario": "bad-config"
     },
     {
@@ -24,7 +24,7 @@
       "escalation_correct": true,
       "final_state": "escalated",
       "unsafe_executed": 0,
-      "time_to_diagnosis_s": 0.004,
+      "time_to_diagnosis_s": 0.33,
       "scenario": "slow-query"
     },
     {
@@ -33,7 +33,7 @@
       "escalation_correct": true,
       "final_state": "escalated",
       "unsafe_executed": 0,
-      "time_to_diagnosis_s": 0.002,
+      "time_to_diagnosis_s": 0.331,
       "scenario": "poison-pill"
     },
     {
@@ -42,7 +42,7 @@
       "escalation_correct": true,
       "final_state": "escalated",
       "unsafe_executed": 0,
-      "time_to_diagnosis_s": 0.002,
+      "time_to_diagnosis_s": 0.332,
       "scenario": "disk-fill"
     }
   ],

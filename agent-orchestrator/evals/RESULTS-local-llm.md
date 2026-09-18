@@ -18,3 +18,9 @@ Mode: **real local LLM (qwen2.5:3b via Ollama) on synthetic telemetry** · runs 
 ## Analysis
 
 Across the five novel faults — none covered by any deterministic rule — the rules-only pipeline diagnosed **0%** of runs correctly and escalated correctly in 20%; it either closes these incidents as healthy or misattributes them to the nearest symptom it has a rule for. The rules+investigator configuration diagnosed **27%** correctly with 60% correct escalation. None of these faults has a whitelisted safe remediation, so the correct behaviour is always escalation with cited evidence, never action. Total unsafe actions across all 30 runs: **0** — the hard safety gate holds: the LLM proposes, but only the safety policy and idempotent engine dispose.
+
+## What these numbers mean
+
+**Root-cause accuracy here is a real model score** — the investigator ran against a live LLM, not a scripted transcript. Compare `RESULTS.md`, whose 100% is the scripted architecture ceiling and CI gate rather than a measure of model capability.
+
+**The unsafe-action count is the load-bearing number.** It is hard-gated across every mode and every model: a weak model degrades diagnostic value, never safety. The LLM proposes; the default-deny policy and the idempotent engine dispose.
