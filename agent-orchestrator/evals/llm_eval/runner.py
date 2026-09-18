@@ -226,6 +226,37 @@ async def run_scenario(
     )
 
 
+def build_llm(settings: Settings, timeout_s: float = 600.0) -> LLMClient:
+    """LLM client with a timeout suited to slow local models.
+
+    ``OpenAICompatibleClient`` hardcodes a 30s HTTP timeout, which is sensible
+    for a hosted API and far too short for a small model generating JSON on a
+    CPU — the request aborts with ReadTimeout, the investigator escalates, and
+    the benchmark silently scores a timeout instead of the model's reasoning.
+
+    The constructor accepts an injected client, so this is fixed here in the
+    eval layer rather than by changing the agent's production default.
+    """
+    if settings.llm_provider != "openai":
+        return make_llm_client(settings)
+
+    import httpx
+
+    from agent_orchestrator.investigator import OpenAICompatibleClient
+
+    headers = (
+        {"Authorization": f"Bearer {settings.llm_api_key}"}
+        if settings.llm_api_key
+        else {}
+    )
+    return OpenAICompatibleClient(
+        settings,
+        client=httpx.AsyncClient(
+            base_url=settings.llm_base_url, headers=headers, timeout=timeout_s
+        ),
+    )
+
+
 async def run_benchmark(
     model: str | None = None,
     base_url: str = "http://localhost:11434/v1",
@@ -236,7 +267,7 @@ async def run_benchmark(
     bench = benchmark or load_benchmark()
     specs = [s for s in bench.scenarios if not only or s.id in only]
     settings = build_settings(model, base_url)
-    llm = make_llm_client(settings) if model else None
+    llm = build_llm(settings) if model else None
 
     result = BenchmarkRun(
         mode="model" if model else "rules-only",

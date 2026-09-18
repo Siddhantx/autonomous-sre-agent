@@ -45,6 +45,69 @@ def _quiet_logs() -> None:
     )
 
 
+def _run_judged(
+    model: str, judge_model: str, base_url: str,
+    only: list[str] | None, out_dir: Path,
+) -> int:
+    """Benchmark with a real model, then score each run with LLM-judged metrics.
+
+    Synchronous on purpose. DeepEval pulls in ``nest_asyncio``, which patches
+    the event loop; if that happens while an ``asyncio.run()`` is still open,
+    teardown fails on Python 3.12+ with "Timeout should be used inside a
+    task". So the benchmark runs and its loop closes *first*, and DeepEval is
+    imported only afterwards.
+
+    Must run in the isolated eval environment (requirements-eval.txt); the
+    main environment deliberately has no DeepEval. Slow by nature: every
+    metric is itself one or more model calls.
+    """
+    from llm_eval.dataset import load_benchmark
+    from llm_eval.runner import run_benchmark
+
+    bench = load_benchmark()
+    print(f"running benchmark on {model} ...")
+    result = asyncio.run(run_benchmark(model=model, base_url=base_url, only=only))
+
+    # Only now — the loop above is closed and will not be torn down again.
+    from llm_eval.judged import build_case, build_judge, build_metrics, judge_case
+
+    print(f"judging with {judge_model} ...")
+    metrics = build_metrics(build_judge(judge_model, base_url))
+
+    lines = [
+        "# APOE Judged-Tier Scorecard",
+        "",
+        f"Agent: **{model}** · judge: **{judge_model}** · "
+        f"{len(result.runs)} scenario(s)",
+        "",
+        "> **Weak-judge caveat.** A 3B judge scoring a 3B agent is a weak "
+        "judge. These scores are directional, not authoritative. Point "
+        "`build_judge` at a stronger model to strengthen them.",
+        "",
+        "| Scenario | Metric | Score | Passed | Reason |",
+        "|---|---|---|---|---|",
+    ]
+    for run in result.runs:
+        spec = bench.get(run.scenario_id)
+        case = build_case(
+            spec.description or run.scenario_id, run.session.diagnosis, run.trace
+        )
+        print(f"  judging {run.scenario_id} ...")
+        for scored in judge_case(case, metrics):
+            reason = scored.detail.replace("\n", " ").replace("|", "/")[:160]
+            lines.append(
+                f"| {run.scenario_id} | {scored.name} | {scored.score:.2f} | "
+                f"{'yes' if scored.passed else 'no'} | {reason} |"
+            )
+    lines.append("")
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    report = out_dir / "scorecard-judged.md"
+    report.write_text("\n".join(lines), encoding="utf-8")
+    print(f"\nwrote {report}")
+    return 0
+
+
 async def _run_redteam(out_dir: Path) -> int:
     """Adversarial suite. Exit 1 on any breach — this one always gates."""
     from llm_eval.redteam import run_redteam, to_markdown
@@ -65,7 +128,7 @@ async def _run_redteam(out_dir: Path) -> int:
     return 0
 
 
-async def main() -> int:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--model",
@@ -84,9 +147,20 @@ async def main() -> int:
              "deterministic (scripted attack payloads), so it needs no model "
              "and is safe to gate CI on.",
     )
+    parser.add_argument(
+        "--judge", metavar="MODEL",
+        help="also score each run with LLM-judged metrics using MODEL as the "
+             "judge. Requires the isolated eval environment (DeepEval) and a "
+             "reachable model; slow, since every metric is itself model calls.",
+    )
     parser.add_argument("--quiet", action="store_true", default=True)
     parser.add_argument("--verbose", dest="quiet", action="store_false")
-    args = parser.parse_args()
+    return parser
+
+
+async def main(args: argparse.Namespace | None = None) -> int:
+    parser = _build_parser()
+    args = args or parser.parse_args()
 
     if args.quiet:
         _quiet_logs()
@@ -123,5 +197,25 @@ async def main() -> int:
     return 0
 
 
+def cli() -> int:
+    """Entry point. Dispatches the judged tier outside any event loop."""
+    parser = _build_parser()
+    args = parser.parse_args()
+    if args.quiet:
+        _quiet_logs()
+
+    if args.judge:
+        if not args.model:
+            parser.error(
+                "--judge needs --model: there is nothing to judge in the "
+                "rules-only baseline, which never calls an LLM"
+            )
+        only_ids = [s.strip() for s in args.only.split(",")] if args.only else None
+        return _run_judged(
+            args.model, args.judge, args.base_url, only_ids, args.out
+        )
+    return asyncio.run(main(args))
+
+
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(main()))
+    raise SystemExit(cli())
