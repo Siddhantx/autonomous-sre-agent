@@ -38,8 +38,11 @@ from .models import (
     Diagnosis,
     Hypothesis,
     IncidentSession,
+    InvestigationTrace,
     ProposedAction,
     RootCause,
+    ToolCallRecord,
+    TraceStep,
 )
 from .observability import get_logger, get_tracer
 
@@ -547,20 +550,30 @@ async def investigate(
     settings: Settings,
     llm: LLMClient,
     knowledge: KnowledgeStore | None = None,
+    trace: InvestigationTrace | None = None,
 ) -> Diagnosis:
-    """Run the budgeted investigation loop. Never raises; escalates instead."""
+    """Run the budgeted investigation loop. Never raises; escalates instead.
+
+    ``trace`` is an optional out-parameter for the evaluation harness: pass an
+    empty ``InvestigationTrace`` and it is filled in place, including partial
+    traces on timeout. Production callers omit it and behaviour is unchanged.
+    """
     try:
         return await asyncio.wait_for(
-            _loop(session, blackboard, connectors, settings, llm, knowledge),
+            _loop(session, blackboard, connectors, settings, llm, knowledge, trace),
             timeout=settings.investigator_timeout_s,
         )
     except asyncio.TimeoutError:
         log.warning("investigator_timeout", timeout_s=settings.investigator_timeout_s)
+        if trace is not None:
+            trace.outcome = "timeout"
         return _escalation(
             f"timed out after {settings.investigator_timeout_s:.0f}s", []
         )
     except Exception as exc:
         log.error("investigator_error", error=str(exc), error_type=type(exc).__name__)
+        if trace is not None:
+            trace.outcome = "error"
         return _escalation(f"{type(exc).__name__}: {exc}", [])
 
 
@@ -571,6 +584,7 @@ async def _loop(
     settings: Settings,
     llm: LLMClient,
     knowledge: KnowledgeStore | None = None,
+    trace: InvestigationTrace | None = None,
 ) -> Diagnosis:
     ctx = ToolContext(connectors, session, blackboard, settings, knowledge)
     findings_json = json.dumps(
@@ -616,28 +630,35 @@ async def _loop(
                 for c in changes
             )
     if settings.swarm_enabled:
+        # ponytail: swarm mode is untraced; the eval harness runs single-agent.
+        # Upgrade path: thread a sub-trace per specialist into swarm_investigate.
         from .swarm import swarm_investigate
         return await swarm_investigate(
             ctx, llm, findings_json, knowledge_block, settings,
         )
 
     tools = active_tools(settings)
+    seed_context = f"Incident findings:\n{findings_json}{knowledge_block}"
     messages: list[dict[str, str]] = [
         {"role": "system", "content": _system_prompt(list(tools))},
-        {"role": "user",
-         "content": f"Incident findings:\n{findings_json}{knowledge_block}"},
+        {"role": "user", "content": seed_context},
     ]
     tokens_used = 0
     tracer = get_tracer()
+    loop_started = time.perf_counter()
+    if trace is not None:
+        trace.context = seed_context
 
     for step in range(settings.investigator_max_steps):
         remaining = settings.investigator_max_tokens - tokens_used
         if remaining <= 0:
             break
+        llm_started = time.perf_counter()
         with tracer.start_as_current_span("investigator.llm") as span:
             span.set_attribute("investigator.step", step)
             response = await llm.complete(messages, max_tokens=remaining)
             span.set_attribute("investigator.tokens", response.tokens)
+        llm_ms = (time.perf_counter() - llm_started) * 1000.0
         tokens_used += response.tokens
         log.info(
             "investigator_llm_call", step=step, tokens=response.tokens,
@@ -646,6 +667,11 @@ async def _loop(
 
         payload = _parse_json(response.text)
         if payload is None or payload.get("action") not in ("tools", "diagnose"):
+            if trace is not None:
+                trace.steps.append(TraceStep(
+                    step=step, action="invalid", llm_latency_ms=llm_ms,
+                    tokens=response.tokens, raw_response=response.text,
+                ))
             messages.append({"role": "assistant", "content": response.text})
             messages.append(
                 {"role": "user",
@@ -656,6 +682,14 @@ async def _loop(
 
         if payload["action"] == "diagnose":
             diagnosis = _to_diagnosis(payload)
+            if trace is not None:
+                trace.steps.append(TraceStep(
+                    step=step, action="diagnose", llm_latency_ms=llm_ms,
+                    tokens=response.tokens, raw_response=response.text,
+                ))
+                trace.outcome = "diagnosed"
+                trace.total_tokens = tokens_used
+                trace.total_latency_ms = (time.perf_counter() - loop_started) * 1000.0
             log.info(
                 "investigator_diagnosed",
                 root_cause=diagnosis.root_cause.value,
@@ -666,15 +700,33 @@ async def _loop(
             return diagnosis
 
         calls = payload.get("calls", []) or []
-        # Parallel fan-out over the requested tools (swarm-orchestration pattern).
-        results = await asyncio.gather(
-            *(
-                _dispatch_tool(
-                    str(c.get("tool", "")), dict(c.get("args", {}) or {}), ctx, tools
-                )
-                for c in calls
+
+        async def _timed_dispatch(c: dict[str, Any]) -> tuple[Any, float]:
+            started = time.perf_counter()
+            res = await _dispatch_tool(
+                str(c.get("tool", "")), dict(c.get("args", {}) or {}), ctx, tools
             )
-        )
+            return res, (time.perf_counter() - started) * 1000.0
+
+        # Parallel fan-out over the requested tools (swarm-orchestration pattern).
+        timed = await asyncio.gather(*(_timed_dispatch(c) for c in calls))
+        results = [r for r, _ in timed]
+        if trace is not None:
+            trace.steps.append(TraceStep(
+                step=step, action="tools", llm_latency_ms=llm_ms,
+                tokens=response.tokens, raw_response=response.text,
+                tool_calls=[
+                    ToolCallRecord(
+                        tool=str(c.get("tool", "")),
+                        args=dict(c.get("args", {}) or {}),
+                        result=str(r),
+                        latency_ms=ms,
+                        # _dispatch_tool degrades failures to json {"error": ...}
+                        ok=not str(r).startswith('{"error"'),
+                    )
+                    for c, (r, ms) in zip(calls, timed)
+                ],
+            ))
         messages.append({"role": "assistant", "content": response.text})
         messages.append(
             {"role": "user",
@@ -683,6 +735,10 @@ async def _loop(
              ) or "no tool calls provided"}
         )
 
+    if trace is not None:
+        trace.outcome = "budget_exhausted"
+        trace.total_tokens = tokens_used
+        trace.total_latency_ms = (time.perf_counter() - loop_started) * 1000.0
     log.warning(
         "investigator_budget_exhausted",
         tokens_used=tokens_used,

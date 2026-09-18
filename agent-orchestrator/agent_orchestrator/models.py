@@ -168,6 +168,63 @@ class RemediationResult(BaseModel):
     executed_at: datetime = Field(default_factory=_utcnow)
 
 
+class ToolCallRecord(BaseModel):
+    """One tool invocation inside the ReAct loop, captured for evaluation."""
+
+    model_config = ConfigDict(frozen=True)
+
+    tool: str
+    args: dict[str, Any] = Field(default_factory=dict)
+    result: str = ""          # stringified tool output (already truncated)
+    latency_ms: float = 0.0
+    ok: bool = True
+
+
+class TraceStep(BaseModel):
+    """One iteration of the ReAct loop: an LLM turn plus any tools it called."""
+
+    model_config = ConfigDict(frozen=True)
+
+    step: int
+    action: str               # "tools" | "diagnose" | "invalid"
+    llm_latency_ms: float = 0.0
+    tokens: int = 0
+    raw_response: str = ""
+    tool_calls: list[ToolCallRecord] = Field(default_factory=list)
+
+
+class InvestigationTrace(BaseModel):
+    """Structured record of one investigation, for offline evaluation.
+
+    Deliberately an *out-parameter*: a caller that wants a trace constructs one
+    and passes it to ``investigate``, which fills it in place. Production
+    callers pass nothing and pay nothing — no signature change, no overhead.
+
+    The OTel spans the investigator already emits cannot serve this purpose:
+    they carry tool names but not tool *arguments* or the raw model text, both
+    of which the tool-correctness and reasoning-quality metrics need.
+    """
+
+    steps: list[TraceStep] = Field(default_factory=list)
+    # The seeded user prompt (findings + knowledge block) — the grounding
+    # context that faithfulness / hallucination metrics score against.
+    context: str = ""
+    outcome: str = "unknown"  # diagnosed | budget_exhausted | timeout | error
+    total_tokens: int = 0
+    total_latency_ms: float = 0.0
+
+    @property
+    def tools_called(self) -> list[str]:
+        return [c.tool for s in self.steps for c in s.tool_calls]
+
+    @property
+    def retrieval_context(self) -> list[str]:
+        """Everything the model actually saw: seed context + tool outputs."""
+        out = [self.context] if self.context else []
+        out.extend(c.result for s in self.steps for c in s.tool_calls if c.result)
+        return out
+
+
 class IncidentSession(BaseModel):
     """The blackboard record for one incident, mutated through its lifecycle."""
 
