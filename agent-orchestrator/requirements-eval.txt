@@ -1,0 +1,18 @@
+# GenAI evaluation tier — deliberately NOT in requirements.txt.
+#
+# DeepEval's dependency tree upgrades opentelemetry-sdk (1.23.0 -> 1.44.x)
+# while this project pins the OTLP gRPC exporter at 1.23.0, so installing it
+# alongside the agent risks breaking the agent's own tracing. It also ships
+# pytest plugins (xdist, rerunfailures, repeat) that would alter collection
+# for the main suite.
+#
+# So it lives in its own environment and its own CI job:
+#
+#   python -m venv .venv-eval
+#   .venv-eval/Scripts/pip install -r requirements.txt -r requirements-eval.txt
+#
+# The deterministic metrics in evals/llm_eval/metrics.py need none of this and
+# are what gate the main build. Everything here is for the judged tier only,
+# which is opt-in by design.
+
+deepeval==4.2.3

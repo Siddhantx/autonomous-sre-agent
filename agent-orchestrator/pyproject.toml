@@ -17,6 +17,13 @@ module = [
 ]
 ignore_missing_imports = true
 
+# DeepEval is an OPTIONAL dependency of the judged eval tier and is absent
+# from the main environment on purpose (it upgrades opentelemetry-sdk past
+# the pin, see requirements-eval.txt). Type-checking must not require it.
+[[tool.mypy.overrides]]
+module = ["deepeval.*"]
+ignore_missing_imports = true
+
 # The connectors module wraps untyped clients (asyncpg/aiokafka rows are Any);
 # transport code, integration-tested against the live lab, not unit-typed.
 [[tool.mypy.overrides]]
