@@ -1,18 +1,52 @@
-# GenAI evaluation tier — deliberately NOT in requirements.txt.
+# GenAI evaluation tier — a SEPARATE environment, by necessity not preference.
 #
-# DeepEval's dependency tree upgrades opentelemetry-sdk (1.23.0 -> 1.44.x)
-# while this project pins the OTLP gRPC exporter at 1.23.0, so installing it
-# alongside the agent risks breaking the agent's own tracing. It also ships
-# pytest plugins (xdist, rerunfailures, repeat) that would alter collection
-# for the main suite.
+# DeepEval and this project's pinned telemetry stack cannot coexist. pip's
+# resolver rejects the combination outright:
 #
-# So it lives in its own environment and its own CI job:
+#   ERROR: Cannot install -r requirements-eval.txt and
+#   opentelemetry-api==1.23.0 because these package versions have conflicting
+#   dependencies. ResolutionImpossible
+#
+# DeepEval requires opentelemetry-sdk >= 1.44 and pydantic >= 2.11.7, while
+# the agent pins otel 1.23.0 / pydantic 2.7.1. It also ships pytest plugins
+# (xdist, rerunfailures, repeat) that would change collection for the main
+# suite.
+#
+# So this file is self-contained rather than layered on requirements.txt, and
+# deliberately leaves telemetry unpinned: the eval harness always runs with
+# OTEL_ENABLED false, so the exporter is never exercised here. The agent's own
+# pins are untouched and remain authoritative for production.
 #
 #   python -m venv .venv-eval
-#   .venv-eval/Scripts/pip install -r requirements.txt -r requirements-eval.txt
+#   .venv-eval/Scripts/pip install -r requirements-eval.txt
 #
-# The deterministic metrics in evals/llm_eval/metrics.py need none of this and
-# are what gate the main build. Everything here is for the judged tier only,
-# which is opt-in by design.
+# Nothing in the CI-gating path needs any of this. The deterministic metrics
+# in evals/llm_eval/metrics.py run in the main environment, for free.
 
+# The judged tier itself
 deepeval==4.2.3
+# DeepEval's OllamaModel needs this client; without it the local (free,
+# air-gapped) judge cannot be constructed at all.
+ollama>=0.3.0
+
+# Agent runtime, at versions compatible with DeepEval's resolver.
+pydantic>=2.11.7
+pydantic-settings>=2.10.1
+structlog>=24.1.0
+tenacity>=8.2.3
+httpx>=0.27.0
+asyncpg>=0.29.0
+redis>=5.0.3
+aiokafka>=0.10.0
+PyYAML>=6.0.1
+fastapi>=0.110.0
+uvicorn>=0.28.0
+
+# Telemetry intentionally unpinned — see the note above.
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-instrumentation-fastapi
+
+# Test runner for the eval-tier tests
+pytest>=8.1.1
+pytest-asyncio>=0.23.6

@@ -67,17 +67,61 @@ def deepeval_available() -> bool:
 # ---------------------------------------------------------------------------
 # Judge model adapter
 # ---------------------------------------------------------------------------
-def build_judge(model: str, base_url: str = "http://localhost:11434/v1") -> Any:
-    """Wrap an OpenAI-compatible endpoint as a DeepEval judge.
+def build_judge(
+    model: str,
+    base_url: str = "http://localhost:11434/v1",
+    provider: str = "ollama",
+) -> Any:
+    """Build a DeepEval judge model.
 
-    Defaults to a local Ollama endpoint so the judged tier costs nothing and
-    runs air-gapped, consistent with the rest of the project. Point it at a
-    stronger endpoint to strengthen the judgements.
+    Defaults to local Ollama so the judged tier costs nothing and runs
+    air-gapped, consistent with the rest of the project. Point it at a
+    stronger endpoint to strengthen the judgements — which the report
+    recommends, because a small local judge is a weak one.
+
+    ``provider="local"`` targets any OpenAI-compatible endpoint instead.
     """
     require_deepeval()
-    from deepeval.models import GPTModel
+    from deepeval.models import LocalModel, OllamaModel
 
-    return GPTModel(model=model, base_url=base_url, _openai_api_key="not-needed")
+    if provider == "ollama":
+        # OllamaModel speaks Ollama's native API, served at the root — not the
+        # /v1 OpenAI-compatible path the rest of this project uses.
+        return OllamaModel(
+            model=model,
+            base_url=base_url.removesuffix("/v1"),
+            temperature=0,
+        )
+    return LocalModel(
+        model=model, base_url=base_url, api_key="not-needed", temperature=0
+    )
+
+
+def build_stub_judge(reply: str = '{"score": 1, "reason": "stub"}') -> Any:
+    """A judge that returns canned text, for verifying metric wiring.
+
+    DeepEval rejects duck-typed judges — a judge must be a DeepEvalBaseLLM
+    subclass — so testing the integration without a live model needs a real
+    subclass rather than a mock. This exists so the metric construction path
+    is covered in CI, where no judge model is available.
+    """
+    require_deepeval()
+    from deepeval.models import DeepEvalBaseLLM
+
+    class _StubJudge(DeepEvalBaseLLM):  # type: ignore[misc]
+        def get_model_name(self) -> str:
+            return "stub-judge"
+
+        def load_model(self) -> Any:
+            return self
+
+        def generate(self, prompt: str, *args: Any, **kwargs: Any) -> str:
+            return reply
+
+        async def a_generate(self, prompt: str, *args: Any, **kwargs: Any) -> str:
+            return reply
+
+    return _StubJudge()
 
 
 # ---------------------------------------------------------------------------
@@ -215,15 +259,18 @@ def judge_case(case: JudgedCase, metrics: list[Any]) -> list[MetricResult]:
     results: list[MetricResult] = []
     for metric in metrics:
         metric.measure(test_case)
+        # No inversion. HallucinationMetric used to score the *proportion of
+        # violations* (lower better, threshold a maximum); as of DeepEval 4.x
+        # it scores like every other metric — 1 passes, 0 fails, threshold is
+        # a minimum. Inverting it here, as older integrations do, would report
+        # hallucination exactly backwards.
         score = float(metric.score or 0.0)
-        # HallucinationMetric is inverted: higher score = more hallucination.
-        name = getattr(metric, "__name__", metric.__class__.__name__)
-        normalised = 1.0 - score if "Hallucination" in metric.__class__.__name__ else score
+        fallback = metric.__class__.__name__
         results.append(MetricResult(
             name=_metric_name(metric),
-            score=normalised,
+            score=score,
             passed=bool(metric.is_successful()),
-            detail=str(getattr(metric, "reason", "") or name),
+            detail=str(getattr(metric, "reason", "") or fallback),
             threshold=float(getattr(metric, "threshold", 0.5)),
         ))
     return results

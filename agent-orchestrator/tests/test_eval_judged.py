@@ -18,10 +18,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "evals"))
 from llm_eval.judged import (  # noqa: E402
     REASONING_RUBRIC,
     build_case,
+    build_judge,
+    build_metrics,
+    build_stub_judge,
     deepeval_available,
     diagnosis_as_text,
     require_deepeval,
     trace_as_text,
+)
+
+# The judged tier lives in its own environment (requirements-eval.txt), so
+# these skip in the main suite and run in the eval venv / the opt-in CI job.
+needs_deepeval = pytest.mark.skipif(
+    not deepeval_available(), reason="DeepEval is intentionally not installed here"
+)
+# The mirror image: these assert the *main* environment's optionality, so they
+# only make sense where DeepEval is absent.
+needs_no_deepeval = pytest.mark.skipif(
+    deepeval_available(), reason="runs only in the DeepEval-free main environment"
 )
 
 from agent_orchestrator.models import (  # noqa: E402
@@ -54,11 +68,13 @@ def _trace() -> InvestigationTrace:
 
 
 # ------------------------------------------------------------ optionality
+@needs_no_deepeval
 def test_deepeval_is_absent_from_the_main_environment() -> None:
     """The CI-gating tier must not depend on the judged tier."""
     assert deepeval_available() is False
 
 
+@needs_no_deepeval
 def test_missing_deepeval_gives_actionable_instructions() -> None:
     with pytest.raises(ImportError) as exc:
         require_deepeval()
@@ -125,3 +141,41 @@ def test_reasoning_rubric_rewards_honest_uncertainty() -> None:
     assert "cannot determine" in REASONING_RUBRIC
     assert "GOOD answer" in REASONING_RUBRIC
     assert "score highly" in REASONING_RUBRIC
+
+
+# ------------------------------------------------ live DeepEval integration
+# These verify the integration against the real library rather than an
+# imagined API. They caught two genuine bugs: a judge class that does not
+# exist (GPTModel), and DeepEval's refusal of duck-typed judges.
+@needs_deepeval
+def test_case_maps_to_a_real_deepeval_test_case() -> None:
+    diagnosis = Diagnosis(root_cause=RootCause.DISK_FILL, confidence=0.9,
+                          rationale="full")
+    test_case = build_case("disk issue", diagnosis, _trace()).to_test_case()
+    assert type(test_case).__name__ == "LLMTestCase"
+    assert test_case.retrieval_context  # grounding actually reached DeepEval
+
+
+@needs_deepeval
+def test_all_four_judged_metrics_construct() -> None:
+    metrics = build_metrics(build_stub_judge(), threshold=0.5)
+    names = {getattr(m, "name", type(m).__name__) for m in metrics}
+    assert "reasoning_quality" in names  # the custom GEval rubric
+    assert any("Faithfulness" in type(m).__name__ for m in metrics)
+    assert any("Hallucination" in type(m).__name__ for m in metrics)
+    assert any("AnswerRelevancy" in type(m).__name__ for m in metrics)
+
+
+@needs_deepeval
+def test_stub_judge_is_a_real_deepeval_model() -> None:
+    """DeepEval rejects duck-typed judges, so the stub must be a true
+    subclass — this is what makes the metric wiring testable without a model."""
+    from deepeval.models import DeepEvalBaseLLM
+
+    assert isinstance(build_stub_judge(), DeepEvalBaseLLM)
+
+
+@needs_deepeval
+def test_local_ollama_judge_constructs_without_contacting_a_server() -> None:
+    judge = build_judge("qwen2.5:3b")
+    assert "qwen2.5:3b" in judge.get_model_name()

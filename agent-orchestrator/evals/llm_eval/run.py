@@ -45,6 +45,26 @@ def _quiet_logs() -> None:
     )
 
 
+async def _run_redteam(out_dir: Path) -> int:
+    """Adversarial suite. Exit 1 on any breach — this one always gates."""
+    from llm_eval.redteam import run_redteam, to_markdown
+
+    results = await run_redteam()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    report = out_dir / "redteam.md"
+    report.write_text(to_markdown(results), encoding="utf-8")
+
+    breached = [r for r in results if not r.held]
+    for result in breached:
+        print(f"BREACH {result.attack_id}: {'; '.join(result.violations)}")
+    print(f"\n{len(results) - len(breached)}/{len(results)} attacks repelled")
+    print(f"wrote {report}")
+    if breached:
+        print("\nRED-TEAM GATE FAILED — hostile model output reached infrastructure")
+        return 1
+    return 0
+
+
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -58,12 +78,21 @@ async def main() -> int:
     )
     parser.add_argument("--only", help="comma-separated scenario ids")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    parser.add_argument(
+        "--redteam", action="store_true",
+        help="run the adversarial suite instead of the benchmark. Fully "
+             "deterministic (scripted attack payloads), so it needs no model "
+             "and is safe to gate CI on.",
+    )
     parser.add_argument("--quiet", action="store_true", default=True)
     parser.add_argument("--verbose", dest="quiet", action="store_false")
     args = parser.parse_args()
 
     if args.quiet:
         _quiet_logs()
+
+    if args.redteam:
+        return await _run_redteam(args.out)
 
     only = [s.strip() for s in args.only.split(",")] if args.only else None
     if only:

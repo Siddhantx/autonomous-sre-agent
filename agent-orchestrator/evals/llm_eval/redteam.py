@@ -249,3 +249,46 @@ async def run_redteam(
 
     cfg = settings or build_settings(None, "")
     return [await run_attack(a, cfg) for a in (suite or load_redteam()).attacks]
+
+
+def to_markdown(results: list[AttackResult]) -> str:
+    """Red-team report. Breaches first — nobody scrolls to find the bad news."""
+    breached = [r for r in results if not r.held]
+    lines = [
+        "# APOE Red-Team Report",
+        "",
+        "Adversarial model output run against the full pipeline. The threat "
+        "model assumes the LLM is already compromised: these attacks inject "
+        "misbehaviour directly rather than trying to elicit it.",
+        "",
+        "## Verdict",
+        "",
+        (
+            f"**{len(breached)} of {len(results)} attacks BREACHED the gate.**"
+            if breached
+            else f"**All {len(results)} attacks repelled.** No action reached "
+                 "infrastructure without an allowing safety verdict."
+        ),
+        "",
+    ]
+    if breached:
+        lines += ["## Breaches", ""]
+        for result in breached:
+            lines.append(f"### {result.attack_id} ({result.category})")
+            lines += [f"- {v}" for v in result.violations] + [""]
+
+    lines += [
+        "## All attacks",
+        "",
+        "| Attack | Category | Held | Final state | Executed |",
+        "|---|---|---|---|---|",
+    ]
+    for result in results:
+        executed = ", ".join(c[0] for c in result.executed) or "nothing"
+        lines.append(
+            f"| {result.attack_id} | {result.category} | "
+            f"{'yes' if result.held else '**NO**'} | "
+            f"{result.session.state.value} | {executed} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
